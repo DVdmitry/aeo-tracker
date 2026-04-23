@@ -1,14 +1,28 @@
 {
   "name": "@webappski/aeo-tracker",
-  "version": "0.1.3",
-  "description": "Open-source CLI for tracking brand visibility across AI answer engines (ChatGPT, Gemini, Claude). Runs weekly audits with direct API calls — no third-party dashboards, no inflated scores. Built and used by Webappski for their public AEO Visibility Challenge.",
+  "version": "0.2.1",
+  "description": "Open-source CLI for tracking brand visibility across AI answer engines (ChatGPT, Gemini, Claude, Perplexity). Smart init auto-suggests queries from your site. Includes diff reports, manual paste mode for browser-only engines, competitor tracking, canonical source extraction, and markdown reports with inline SVG charts. Direct API calls — no third-party dashboards, no inflated scores. Zero runtime dependencies.",
   "type": "module",
   "bin": {
     "aeo-tracker": "./bin/aeo-tracker.js"
   },
+  "scripts": {
+    "test:syntax": "node --check bin/aeo-tracker.js",
+    "test:imports": "node -e \"Promise.all(['./lib/config.js','./lib/mention.js','./lib/diff.js','./lib/init/keys.js','./lib/init/fetch-site.js','./lib/init/suggest.js','./lib/init/research/brainstorm.js','./lib/init/research/filter.js','./lib/init/research/classify-intent.js','./lib/init/research/score.js','./lib/init/research/validate-category.js','./lib/init/research/validate-query-llm.js','./lib/init/research/run-validation.js','./lib/init/research/research.js','./lib/providers/openai.js','./lib/providers/gemini.js','./lib/providers/anthropic.js','./lib/providers/perplexity.js','./lib/providers/index.js','./lib/svg/index.js','./lib/svg/radar.js','./lib/report/sections.js','./lib/report/extract-quotes.js','./lib/report/markdown.js','./lib/report/html.js','./lib/report/classify-citations.js','./lib/report/extract-competitors-llm.js','./lib/report/response-quality.js'].map(f => import(f))).then(() => console.log('OK: all modules loaded')).catch(e => { console.error(e); process.exit(1); })\"",
+    "test:cli": "node bin/aeo-tracker.js --version && node bin/aeo-tracker.js --help > /dev/null && echo OK: CLI works",
+    "test:validator": "node test/validate-queries.test.js",
+    "test:extract": "node test/extract-competitors-llm.test.js",
+    "test:quality": "node test/response-quality.test.js",
+    "test:pipeline": "node test/pipeline.test.js",
+    "test": "npm run test:syntax && npm run test:imports && npm run test:cli && npm run test:validator && npm run test:extract && npm run test:quality && npm run test:pipeline",
+    "prepublishOnly": "npm test"
+  },
   "files": [
     "bin/",
+    "lib/",
+    "examples/",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [
@@ -34,7 +48,7 @@
     "type": "git",
     "url": "git+https://github.com/DVdmitry/aeo-tracker.git"
   },
-  "homepage": "https://webappski.com/en/posts/aeo-visibility-challenge-week-1",
+  "homepage": "https://github.com/DVdmitry/aeo-tracker#readme",
   "bugs": {
     "url": "https://github.com/DVdmitry/aeo-tracker/issues"
   },

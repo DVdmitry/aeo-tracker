@@ -1,0 +1,45 @@
+$ aeo-tracker run
+
+@webappski/aeo-tracker — run
+Brand: Webappski | Domain: webappski.com | Date: 2026-04-19
+Providers: ChatGPT (OpenAI), Gemini (Google), Claude (Anthropic)
+Queries: 3
+
+  NO   Q1/openai (3 citations, 8673ms)
+  NO   Q1/gemini (5 citations, 5234ms)
+  NO   Q1/anthropic (2 citations, 47536ms)
+  NO   Q2/openai (4 citations, 12267ms)
+  NO   Q2/gemini (6 citations, 91654ms)
+  NO   Q2/anthropic (3 citations, 44547ms)
+  NO   Q3/openai (3 citations, 7741ms)
+  NO   Q3/gemini (4 citations, 4745ms)
+  NO   Q3/anthropic (2 citations, 34886ms)
+
+════════════════════════════════════════════════════════════
+  AEO VISIBILITY REPORT — Webappski
+════════════════════════════════════════════════════════════
+
+  Query                                      openai      gemini      anthropic
+  ────────────────────────────────────────────────────────────────────────────
+  Q1: best AEO services 2026                  no          no          no
+  Q2: how to get your product visible in Ch   no          no          no
+  Q3: answer engine optimization for SaaS s   no          no          no
+
+  Score: 0% (0/9 checks returned a mention)
+
+  Tracked competitors (from config):
+    Otterly (3/9 = 33%)
+    HubSpot (1/9 = 11%)
+    Profound (1/9 = 11%)
+
+  Top canonical sources (pages AI cites for your vertical):
+    1× https://minuttia.com
+    1× https://respona.com
+    1× https://moosend.com
+    1× https://firstpagesage.com
+    1× https://higoodie.com
+    (15 more in _summary.json)
+
+  Raw responses saved to: aeo-responses/2026-04-19/
+
+# exit code: 2 (zero mentions across all engines — expected for a pre-visibility brand)

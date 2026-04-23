@@ -1,234 +1,750 @@
 # @webappski/aeo-tracker
 
-Open-source CLI for tracking how often AI answer engines (ChatGPT, Gemini, Claude) mention your brand. No third-party dashboards, no inflated scores — just direct API calls to the same models your customers use.
+[![npm version](https://img.shields.io/npm/v/@webappski/aeo-tracker)](https://www.npmjs.com/package/@webappski/aeo-tracker)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
+[![GitHub stars](https://img.shields.io/github/stars/DVdmitry/aeo-tracker?style=social)](https://github.com/DVdmitry/aeo-tracker)
 
-> Built by [Webappski](https://webappski.com), an AEO agency in Gdynia, Poland. We use this tool ourselves for our public [AEO Visibility Challenge](https://webappski.com/en/posts/aeo-visibility-challenge-week-1) — a weekly series tracking our own AI visibility from 0%.
+**The free, open-source AEO (Answer Engine Optimization) tracker for monitoring brand visibility across ChatGPT, Gemini, Claude, and Perplexity. An alternative to Profound, Otterly, and Peec.ai that hits official AI APIs instead of web-scraping.**
 
-## Why this exists
+`@webappski/aeo-tracker` is a Node.js CLI that measures how often AI answer engines mention your brand, tracks your position in ranked AI answers, extracts competitor mentions, and saves verbatim AI quotes for audit.
 
-Most AEO measurement tools give unreliable results. In Week 1 of our public challenge, HubSpot AEO Grader scored us 28-44/100 while direct API tests showed **zero mentions**. Ahrefs Free AI Visibility also returned false negatives for brands we know are mentioned. Neither matched reality.
+**As of April 2026, `@webappski/aeo-tracker` is the only open-source AEO tracker that calls ChatGPT, Gemini, Claude, and Perplexity via official APIs** — no web scraping, no proxied browser sessions, no third-party scoring layer between you and the raw AI output.
 
-We built `aeo-tracker` because the only honest way to measure AI visibility is to ask the AI engines directly and read their answers. That is what this tool does.
+It also uses a **two-model LLM cross-check** (GPT + Gemini) to verify every extracted competitor name against the source text, so hallucinated brand mentions are filtered out — a defense your subscription competitors don't offer.
 
-## What it does
+Zero runtime dependencies, MIT license, ~$0.20/run (2-engine minimum) to ~$0.55/run (full coverage) using your own API keys. Works with Node.js 18+ on macOS, Linux, and Windows.
 
-- Sends your test queries to **ChatGPT** (OpenAI), **Gemini** (Google), and **Claude** (Anthropic) via their official APIs
-- Checks if your brand name or domain appears in the AI-generated answer text or cited sources
-- Reports **mention/no-mention per query per engine** — no composite scores, no obfuscation
-- Extracts which **competitors** are mentioned instead of you
-- Saves **raw API responses** to disk for full auditability
-- Runs with **zero dependencies** (Node.js 18+ only)
-- Costs about **$0.05 per run** in API credits (you use your own API keys)
+### Key facts
 
-## Quick start
+- **Pricing:** Free (MIT license) + API spend — **~$0.20/run** (2-engine minimum) to **~$0.55/run** (full 4-engine coverage)
+- **Required API keys:** **OpenAI + Gemini** (both needed — they power the two-model competitor extractor and serve as the ChatGPT + Gemini columns in the report)
+- **Optional API keys:** Anthropic (adds Claude column, ~$0.30/run), Perplexity (adds Perplexity column, ~$0.05/run)
+- **Supported AI engines measured:** ChatGPT (OpenAI), Gemini (Google), Claude (Anthropic), Perplexity — plus manual paste mode for Perplexity Pro, Bing Copilot, ChatGPT Pro UI
+- **Outputs:** Markdown report with inline SVG charts + full HTML report with interactive drill-down
+- **Architecture:** Direct provider APIs (no web scraping, no third-party dashboard, no vendor lock-in)
+- **Extraction:** Two-model LLM cross-check (GPT + Gemini) with hallucination filter
+- **Validation:** Pre-flight query checks — ambiguous acronym detection + LLM industry-fit + commercial-intent filter
+- **Runtime:** Node.js ≥18, zero runtime dependencies
+- **License:** MIT open source, source code on GitHub
+
+> Built by [Webappski](https://webappski.com), an Answer Engine Optimization agency that runs aeo-tracker weekly on its own brand. We open-sourced aeo-tracker after measuring 28–44/100 on HubSpot's AEO Grader while direct API tests showed zero mentions of Webappski — third-party AEO scores are not reality.
+
+![AEO report — LLM-generated actions card showing prioritised, engine-specific steps ("email editors of X", "publish comparison page for Y")](./examples/screenshot-05-actions.png)
+
+> The "Recommended actions" section from a real `aeo-tracker run` on Webappski's own brand. Every card is LLM-generated from your actual run data — specific engines, specific URLs, specific competitors to displace. Zero external assets, renders on GitHub and Notion.
+
+## Quickstart (3 commands, ~60 seconds)
 
 ```bash
 npm install -g @webappski/aeo-tracker
+export OPENAI_API_KEY=sk-... GEMINI_API_KEY=AIza...
+aeo-tracker init --yes --brand=YOURBRAND --domain=YOURDOMAIN.COM --auto && aeo-tracker run && aeo-tracker report --html
+```
 
-# Create config
-aeo-tracker init
+Get your 2 required API keys in ~2 minutes: [OpenAI](https://platform.openai.com/api-keys), [Google AI Studio](https://aistudio.google.com/apikey). Anthropic / Perplexity keys are optional (they add engine columns to the report). First run costs ~$0.20.
 
-# Set API keys (at least one required)
-export OPENAI_API_KEY=sk-...
-export GEMINI_API_KEY=AI...
-export ANTHROPIC_API_KEY=sk-ant-...
+## Your first run will show 0% — that's normal
 
-# Run audit
+New brands typically score **0–5% in the first 4 weeks**. AEO visibility compounds slowly: AI models don't learn about new brands in real time. They update when third-party sources (blog posts, directories, review sites) start mentioning you. `aeo-tracker` is designed to track that compounding — the value is in week-over-week deltas, not the absolute score on day 1. The `Recommended actions` section of every report tells you exactly which third-party sources to pitch to move the needle.
+
+See [What changes over time](#what-changes-over-time) for a realistic month-by-month trajectory.
+
+---
+
+## Who this is for
+
+- **B2B SaaS founders** — observability, devtools, data platforms, analytics — measuring whether ChatGPT, Gemini, or Claude mentions their product when buyers ask category questions
+- **AEO agencies** tracking client brands week-over-week with auditable raw data
+- **Marketing teams** comparing brand presence across AI answer engines side-by-side
+- **Developers** who want CI-grade visibility monitoring (rich exit codes, JSON output, zero deps)
+
+## Common use cases
+
+### Launching a SaaS product — is ChatGPT mentioning me?
+
+Run `aeo-tracker init` right after launch to lock in a baseline of three commercial queries your target customers would actually type into an AI answer engine. Run `aeo-tracker run` weekly and compare deltas. Typical trajectory: 0% mentions in weeks 1–4, first mention somewhere between week 6 and week 12, depending on how much third-party content references your brand.
+
+### Running a weekly AEO audit for agency clients
+
+Create one `.aeo-tracker.json` per client, run the CLI in a cron script, collect the generated HTML reports into a shared folder. Each report is a single self-contained file — no dashboard dependency, no shared login. Raw AI responses land in `aeo-responses/YYYY-MM-DD/` for audit when a client asks "what exactly did ChatGPT say about me?"
+
+### Auditing AI visibility before a funding round
+
+Founders pitch "we show up in ChatGPT when buyers ask X" and need evidence. Run aeo-tracker against the exact buyer-intent queries, hand the due-diligence team the `aeo-responses/` folder with verbatim JSON — every claim is verifiable from the raw response payload.
+
+### Competitive intelligence: who does AI recommend in my category?
+
+Even if your brand is invisible, the competitors AI surfaces are a weekly signal of who is winning the AI-answer share. The Position section of the report aggregates competitor mentions across queries and engines; the Recommended actions section tells you which third-party sources (blog posts, LinkedIn articles, directories) to pitch for inclusion.
+
+### CI-integrated regression alerts
+
+Add `aeo-tracker run` to a GitHub Actions cron workflow. Exit code `1` fires when score drops more than the configured threshold (default 10 points). Exit code `2` fires on a "completely invisible" run. Hook these to your Slack alerts channel.
+
+## What you see in the report
+
+Every `aeo-tracker run` produces a self-contained HTML report — one file, inline SVG, no external assets. Here's what it looks like on real data.
+
+### 1. Visibility at a glance — score, trend, per-engine breakdown
+
+![Hero — score, sparkline, per-engine cards, heatmap](./examples/screenshot-01-hero.png)
+
+Traffic-light hero (`INVISIBLE` / `EMERGING` / `PRESENT` / `STRONG`), score delta vs the previous run, and per-engine hit-rate cards with their own sparklines. The heatmap below is the compact status grid — you see all 9 cells (3 queries × 3 engines) in one look.
+
+### 2. Position in AI answers — who AI names instead of you
+
+![Position grid — competitors per cell, verified vs unverified tiers, view response affordance](./examples/screenshot-02-position-grid.png)
+
+For every query × engine pair: whether you made the ranked list, plus the competitors AI named in your place. **Solid badges** = both extraction models agreed the name is a real competitor. **Dashed badges with `?`** = only one model agreed (weaker signal, surfaced honestly instead of silently dropped). Click any cell — or keyboard-Tab to it and press Enter — to see the full raw AI response.
+
+### 3. Who AI mentioned instead of you — and which pages AI cites
+
+![Competitors bar chart + canonical sources cited](./examples/screenshot-03-competitors-sources.png)
+
+Aggregate leaderboard of competitors across all tracked queries, and the pages AI engines keep linking to. Your domain is highlighted in amber so you can see at a glance whether AI is citing your content (even when it doesn't name you).
+
+### 4. Session cost — transparent, per-model
+
+![Session cost breakdown](./examples/screenshot-04-cost-breakdown.png)
+
+Every run shows what you actually paid to which model. Multiply by your weekly cadence to project monthly spend. No hidden subscription, no inflated "credits" — just dollars.
+
+### 5. Recommended actions — LLM-generated, engine-aware, concrete
+
+![Recommended actions cards](./examples/screenshot-05-actions.png)
+
+An LLM reads the run data + your category and produces prioritised action cards — not generic "improve SEO" advice. Real examples from our own run: *"Email editors of firstpagesage.com, minuttia.com, and the LinkedIn article '10 best AEO agencies 2026' (industry publications where competitors are listed) — these pages were cited 2× each by AI engines, getting added is the fastest path to appearing in ChatGPT/Gemini/Claude answers."* Priority + intent kind (gap / compete / defend / win) + target engines per card.
+
+---
+
+## What is AEO (Answer Engine Optimization)?
+
+AEO is the practice of measuring and improving how often AI answer engines (ChatGPT, Gemini, Claude, Perplexity) mention your brand when users ask category questions. Unlike traditional SEO, which optimizes for click-through from search result pages, AEO optimizes for **inclusion in the AI-generated answer itself** — because that's what users see and act on.
+
+The foundational metric is trivially simple: *"When a user asks an AI engine about my category, does my brand appear in the answer?"* Everything else (position, sentiment, citation source) is secondary to that yes/no. `aeo-tracker` measures the yes/no directly, then enriches it with position, citations, and competitors.
+
+---
+
+## Table of contents
+
+- [Common use cases](#common-use-cases) — SaaS launch, agency audits, CI alerts
+- [What you see in the report](#what-you-see-in-the-report) — 5 screenshots from a real run
+- [60-second init](#60-second-init) — your first run, real transcript
+- [What changes over time](#what-changes-over-time) — weeks 1, 8, and onward
+- [Sample report](./examples/sample-report.md) — real markdown output with inline SVG
+- [Installation](#installation)
+- [Migrating from 0.1.x to 0.2.x](#migrating-from-01x-to-02x) — breaking changes + upgrade steps
+- [Commands](#commands) — full CLI reference
+- [Exit codes](#exit-codes) — graduated CI alerting
+- [Configuration](#configuration)
+- [Manual paste mode](#manual-paste-mode) — for Perplexity, Copilot, ChatGPT Pro UI
+- [CI integration](#ci-integration) — GitHub Actions, bash cron
+- [Compared to alternatives](#compared-to-alternatives) — Profound, Otterly, Peec.ai, HubSpot, Ahrefs
+- [FAQ](#faq)
+- [Limitations](#limitations) — what this tool does NOT do
+- [Roadmap](#roadmap)
+- [Behind this tool](#behind-this-tool) — who built it and why
+
+---
+
+## 60-second init
+
+`aeo-tracker init` sets up a working config from your brand name and your domain. It detects your API keys, fetches **your own site** to learn your category, asks an LLM to suggest 3 commercial test queries, and validates them before saving.
+
+Example transcript — running `aeo-tracker init --yes --brand=YOURBRAND --domain=YOURDOMAIN.COM --auto`. Everywhere you see `YOURDOMAIN.COM` below is a placeholder for **your own site** — the tool fetches it because that's the brand being initialized. `aeo-tracker` never sends your data to webappski.com or any third-party server:
+
+```text
+@webappski/aeo-tracker — init
+
+Checking environment for API keys...
+  ✓ OPENAI_API_KEY
+  ✓ GEMINI_API_KEY
+  ✓ ANTHROPIC_API_KEY (optional — adds Claude column)
+
+Configured providers: OpenAI (ChatGPT), Google (Gemini), Anthropic (Claude)
+
+Auto-suggest will:
+  1. Fetch https://YOURDOMAIN.COM (your own site) to learn your category
+  2. Extract title, meta, headings, first 2KB of body text
+  3. Send that excerpt to Anthropic (Claude) via YOUR API key
+  4. Show you the 3 suggested queries before saving
+  Your API key never leaves this machine. No telemetry. Nothing is sent to webappski.com.
+
+  Fetching https://YOURDOMAIN.COM... (~165KB)
+  Asking Anthropic (Claude)... (~$0.0024)
+
+Suggested queries (language: en, commercial-only)
+  Q1: best YOURCATEGORY services 2026
+  Q2: top YOURCATEGORY monitoring tools 2026
+  Q3: YOURCATEGORY consultants for B2B startups
+
+  ✓ Static check — no ambiguous acronyms
+  ✓ LLM industry-fit check — all 3 queries pass (confidence ≥ 0.9)
+  ✓ Commercial-only policy — all retrieval-triggered (no methodology / how-to queries)
+
+✓ Created .aeo-tracker.json
+  Brand: YOURBRAND | Domain: YOURDOMAIN.COM
+  Queries: 3, Providers: 3
+
+Next: aeo-tracker run
+```
+
+What you paid for the setup: **1 LLM call, $0.0024**. What you got: a ready-to-run config with 3 queries pre-validated for commercial intent and industry fit — a baseline you can trust for week-over-week tracking.
+
+Full transcript: [`examples/sample-init-transcript.txt`](./examples/sample-init-transcript.txt).
+
+---
+
+## What changes over time
+
+The value of `aeo-tracker` compounds with history. From our own weekly audits, **week 4 is when sparkline trends become meaningful** — one-snapshot data is a baseline, not a signal.
+
+| Day | Command | What you see | What's written to disk |
+|---|---|---|---|
+| 0 | `aeo-tracker init` | Auto-suggest from your site, ~$0.0024 | `.aeo-tracker.json` |
+| 1 | `aeo-tracker run` | Baseline score (often 0% for young brands), exit code 2 | `aeo-responses/YYYY-MM-DD/` (9 raw JSON + `_summary.json`) |
+| 1 | `aeo-tracker report` | Markdown + HTML with heatmap, verbatim quotes when mentions exist, competitor barchart | `aeo-reports/YYYY-MM-DD/report.md` |
+| +7 | `aeo-tracker run` | Second snapshot, 1 week later | `aeo-responses/YYYY-MM-DD/` |
+| +7 | `aeo-tracker diff --last 2` | Delta table: gained/lost mentions, competitor movement, exit code 0/1 | stdout |
+| +7 | `aeo-tracker report` | Same format, now with sparkline trend per query | `aeo-reports/YYYY-MM-DD/report.md` |
+| +28 | `aeo-tracker run --json \| jq .score` | CI-ready JSON, no ANSI noise | stdout |
+
+By week 2, `diff` is meaningful. By week 4, sparklines tell a real story. By month 3, canonical-source trends identify *which pages* AI engines keep citing for your vertical (SEO gold — concrete pages to pitch for mentions).
+
+---
+
+## Sample report
+
+Every `aeo-tracker report` produces a self-contained markdown file with inline SVG charts. See [`examples/sample-report.md`](./examples/sample-report.md) for a real one — generated from Webappski's own weekly audit, score 0/9 (yes, that's the founder's own brand; visibility work is in progress).
+
+We use this exact format internally for client audits. The fact that you can run it locally for free is intentional — proprietary scoring is the problem we're solving, not the moat we're building.
+
+A fragment of the inline SVG heatmap shows three engines × three queries, colour-coded — zero external dependencies, renders on GitHub, Notion, VSCode preview, and any markdown viewer that supports inline SVG:
+
+```html
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 428 144" width="100%">
+  <text x="220" y="20" text-anchor="middle" font-weight="600" fill="#475569">Q1</text>
+  <text x="300" y="20" text-anchor="middle" font-weight="600" fill="#475569">Q2</text>
+  <text x="380" y="20" text-anchor="middle" font-weight="600" fill="#475569">Q3</text>
+  <text x="168" y="50" text-anchor="end" fill="#0f172a">ChatGPT</text>
+  <rect x="184" y="32" width="72" height="28" rx="6" fill="#ef4444"/>
+  <text x="220" y="50" text-anchor="middle" font-weight="700" fill="#fff">NO</text>
+  <!-- ... 8 more cells ... -->
+</svg>
+```
+
+Neutral tailwind palette (`#10b981` green / `#ef4444` red / `#94a3b8` gray), fixed — never brand colours.
+
+---
+
+## Installation
+
+### Prerequisites
+
+- **Node.js 18+** on macOS, Linux, or Windows
+- **Two API keys minimum:** `OPENAI_API_KEY` + `GEMINI_API_KEY`. Both are used as AI engines being measured AND as the two-model competitor extractor — `aeo-tracker run` hard-fails if either is missing. Get them in 2 minutes: [OpenAI](https://platform.openai.com/api-keys), [Google AI Studio](https://aistudio.google.com/apikey).
+- **Optional keys:** `ANTHROPIC_API_KEY` (adds Claude column), `PERPLEXITY_API_KEY` (adds Perplexity column)
+
+### Install
+
+```bash
+npm install -g @webappski/aeo-tracker
+```
+
+Global install is recommended; local `npm install` also works if you prefer to vendor it. Zero runtime dependencies — pure Node, no `node_modules` bloat.
+
+Verify:
+
+```bash
+aeo-tracker --version        # prints current version
+aeo-tracker --help
+```
+
+### Migrating from 0.1.x to 0.2.x
+
+If you're upgrading from a previously-installed `@webappski/aeo-tracker@0.1.x`, 0.2.0 introduces two breaking changes. Neither will silently corrupt your data — each hard-fails with a clear message — but both require a one-time action.
+
+**1. Set both `OPENAI_API_KEY` and `GEMINI_API_KEY`.** 0.1.x worked with any single provider. 0.2.0 uses OpenAI + Gemini jointly as the two-model competitor extractor, so both are required on every `run`. If you only had one of them before, get the second key in ~2 minutes: [OpenAI keys](https://platform.openai.com/api-keys), [Google AI Studio](https://aistudio.google.com/apikey). Anthropic and Perplexity remain optional.
+
+**2. Regenerate your queries once.** 0.1.x `init` might have written methodological queries ("how to get recommended by AI"), which 0.2.0's commercial-only validator now rejects — those queries produce tutorial answers without vendor lists, not useful for weekly visibility tracking. Regenerate with the new validator in one command:
+
+```bash
+aeo-tracker init --queries-only
+```
+
+This keeps your brand, domain, and provider config; only the 3 queries are refreshed and revalidated. Cost: ~$0.01. Old `competitors: [...]` field and outdated model names in the config are auto-migrated (silently ignored / auto-upgraded respectively).
+
+**Escape hatch:** if for research reasons you want to keep a non-commercial query temporarily, `aeo-tracker run --force` bypasses the validator gate for one run. Not recommended for normal weekly tracking.
+
+### First run (minimum 2 keys)
+
+```bash
+# Export your two required keys (or use .env / your shell rc file)
+export OPENAI_API_KEY="sk-..."
+export GEMINI_API_KEY="AIza..."
+
+# Setup — creates .aeo-tracker.json with 3 validated commercial queries
+aeo-tracker init --yes --brand="YourBrand" --domain="yourbrand.com" --auto
+
+# Measure — runs queries, extracts competitors, writes today's snapshot
 aeo-tracker run
+
+# Generate the HTML report and open in your browser
+aeo-tracker report --html
 ```
 
-## Example output
+The entire first-run flow takes ~60 seconds and costs ~$0.20 in API calls at 2-key minimum setup.
 
+---
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `aeo-tracker init` | Create `.aeo-tracker.json` — brand, domain, 3 queries, competitors, provider config |
+| `aeo-tracker run` | Query each configured provider with each query; save raw responses + summary |
+| `aeo-tracker run-manual <provider> --from-dir <dir>` | Import pasted answers for engines without API access; merge into today's summary |
+| `aeo-tracker diff [dateA] [dateB]` | Compare two runs; show delta table + competitor movement |
+| `aeo-tracker report` | Generate markdown with inline SVG charts + verbatim AI quotes |
+| `aeo-tracker --version` / `--help` | Self-explanatory |
+
+### Flags reference
+
+| Flag | Command(s) | Purpose |
+|---|---|---|
+| `--yes` / `-y` | `init` | Non-interactive mode (CI/dotfiles). Requires `--brand`, `--domain`, and `--auto` or `--manual` |
+| `--brand <name>` | `init --yes` | Brand name (skip prompt) |
+| `--domain <url>` | `init --yes` | Site URL or domain (skip prompt) |
+| `--category <text>` | `init --yes` | Category description — disambiguates ambiguous industry terms. If omitted, auto-inferred from site meta |
+| `--auto` | `init --yes` | Full research pipeline: brainstorm → filter → score → cross-model validate → select |
+| `--manual` | `init --yes` | Skip LLM analysis (non-interactive manual requires pre-existing queries) |
+| `--light` | `init --yes --auto` | Bypass research pipeline; use single-shot suggest (faster/cheaper, less thorough) |
+| `--keywords "q1,q2,q3"` | `init --yes` | Bring-your-own keywords; skip LLM brainstorm entirely. **$0 LLM cost** |
+| `--json` | `run` | Structured JSON to stdout (ANSI suppressed); pipe-friendly for CI |
+| `--from-dir <path>` | `run-manual` | Directory containing `q1.txt`, `q2.txt`, `q3.txt` with pasted answers |
+| `--last <N>` | `diff` | Compare the last N runs (default 2) |
+| `--since <date>` | `diff` | Compare given date to latest run |
+| `--output <path>` | `report` | Override default `aeo-reports/<date>/report.md` path |
+
+---
+
+## Exit codes
+
+`run`, `diff`, and `run-manual` encode outcome state in exit codes so CI can react correctly instead of treating every non-zero as a generic failure.
+
+| Code | Meaning | Typical CI response |
+|---|---|---|
+| `0` | Score stable or improved vs previous run | success — nothing to alert |
+| `1` | Score dropped more than `regressionThreshold` (default `10`pp) | high-priority alert — visibility regressing |
+| `2` | All checks returned zero mentions | medium alert — brand invisible everywhere (normal on day 1) |
+| `3` | All providers errored | infrastructure alert — keys/billing/network issue |
+
+Tune the threshold in `.aeo-tracker.json`:
+
+```json
+{ "regressionThreshold": 5 }
 ```
-  @webappski/aeo-tracker — run
-  Brand: acme | Domain: acme.com | Date: 2026-04-13
-  Providers: ChatGPT (OpenAI), Gemini (Google), Claude (Anthropic)
 
-  Query                                       openai      gemini      anthropic
-  ────────────────────────────────────────────────────────────────────────────
-  Q1: best project management tools 2026      no          no          YES
-  Q2: how to manage remote teams effectively  no          no          no
-  Q3: project management for startups         SRC         no          no
-
-  Score: 22% (2/9 checks returned a mention)
-
-  Top competitors mentioned instead:
-    Asana (5 checks)
-    Monday.com (4 checks)
-    Notion (3 checks)
-
-  Raw responses saved to: aeo-responses/2026-04-13/
-```
+---
 
 ## Configuration
 
-Running `aeo-tracker init` creates `.aeo-tracker.json` in your project root:
+`.aeo-tracker.json` after `init`:
 
 ```json
 {
-  "brand": "your-brand",
-  "domain": "your-brand.com",
+  "brand": "YOURBRAND",
+  "domain": "YOURDOMAIN.COM",
+  "category": "YOURCATEGORY — one-line description of your competitive space",
   "queries": [
-    "best [your category] 2026",
-    "how to [problem your product solves]",
-    "[your category] for [your target audience]"
+    "best YOURCATEGORY services 2026",
+    "top YOURCATEGORY monitoring tools 2026",
+    "YOURCATEGORY consultants for B2B startups"
   ],
+  "validationCache": [
+    {
+      "query": "best YOURCATEGORY services 2026",
+      "valid": true,
+      "confidence": 0.95,
+      "search_behavior": "retrieval-triggered",
+      "validatedAt": "2026-04-23T10:00:00Z"
+    }
+  ],
+  "regressionThreshold": 10,
   "providers": {
-    "openai": { "model": "gpt-4o-search-preview", "env": "OPENAI_API_KEY" },
-    "gemini": { "model": "gemini-2.0-flash", "env": "GEMINI_API_KEY" },
-    "anthropic": { "model": "claude-sonnet-4-6", "env": "ANTHROPIC_API_KEY" }
+    "openai":     { "model": "gpt-5-search-api",  "env": "OPENAI_API_KEY" },
+    "gemini":     { "model": "gemini-2.5-pro",     "env": "GEMINI_API_KEY" },
+    "anthropic":  { "model": "claude-sonnet-4-6",  "env": "ANTHROPIC_API_KEY" },
+    "perplexity": { "model": "sonar-pro",          "env": "PERPLEXITY_API_KEY" }
   }
 }
 ```
 
-### Choosing queries
+### Fields
 
-Pick 3 **unbranded** queries (don't include your brand name — that proves nothing):
-
-1. **Commercial intent** — what someone types when looking to buy your category ("best X tools 2026")
-2. **Informational intent** — what someone types when researching your problem space ("how to do Y")
-3. **Vertical intent** — what someone in your specific target market types ("X for [industry]")
+- **`brand`, `domain`** — required. Used for mention detection and the `brand-on-site` sanity check during auto-suggest.
+- **`category`** — required. Describes your competitive category; feeds into the two-model extractor prompt so it knows "Reddit / G2 / Trustpilot" are data sources, not competitors in the AEO services category. Auto-inferred from site meta if `init` isn't given `--category`.
+- **`queries`** — exactly 3. Unbranded. All three must pass the commercial-intent validator — methodological "how to X" queries are blocked by default (they produce tutorial-style AI answers without vendor lists, polluting the trend signal).
+- **`validationCache`** — written by `init` / `init --queries-only`. Stores the LLM validator verdict per query so `run` doesn't re-validate unchanged queries. Drop it to force fresh validation.
+- **`regressionThreshold`** — optional. Default `10` percentage points. `run` exit code `1` fires when score drops by more than this vs the previous run.
+- **`providers[].env`** — optional override. By default `OPENAI_API_KEY` etc.; if your keys live under non-standard names (e.g. `OPENAI_API_KEY_DEV`), `init` detects them via regex and writes the actual names here. The model name is auto-discovered at run start (newest available for each provider).
 
 ### API keys
 
-You bring your own API keys. The tool calls each provider's official API and stores nothing remotely. Set keys as environment variables:
+| Variable | Provider | Required? | Get a key |
+|---|---|---|---|
+| `OPENAI_API_KEY` | OpenAI (ChatGPT) | **Required** | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
+| `GEMINI_API_KEY` | Google (Gemini) | **Required** | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+| `ANTHROPIC_API_KEY` | Anthropic (Claude) | Optional | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) |
+| `PERPLEXITY_API_KEY` | Perplexity (Sonar) | Optional | [docs.perplexity.ai](https://docs.perplexity.ai/) |
 
-| Variable | Provider | How to get |
-|---|---|---|
-| `OPENAI_API_KEY` | OpenAI (ChatGPT) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
-| `GEMINI_API_KEY` | Google (Gemini) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
-| `ANTHROPIC_API_KEY` | Anthropic (Claude) | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) |
-
-You don't need all three. The tool runs whichever providers have keys set and skips the rest.
+**Why OpenAI + Gemini are required:** every `aeo-tracker run` uses them twice — (1) as two of the AI engines being measured for brand mentions, and (2) as the two-model cross-check extractor that identifies competitor names in every AI response. Without both, the extractor hard-fails before any API call is made (preserves your budget). Anthropic and Perplexity only add their respective engine columns to the report and are fully optional.
 
 ### Cost per run
 
-| Provider | Model | Approximate cost per query |
+**`aeo-tracker run`** (weekly visibility audit — the main workflow):
+
+| Role | Provider / Model | ≈ cost per run (3 queries) |
 |---|---|---|
-| OpenAI | gpt-4o-search-preview | ~$0.015 |
-| Gemini | gemini-2.0-flash | ~$0.002 |
-| Anthropic | claude-sonnet-4-6 | ~$0.015 |
+| Engine (required) | OpenAI `gpt-5-search-api` | ~$0.13 |
+| Engine (required) | Google `gemini-2.5-pro` | ~$0.03 |
+| Engine (optional) | Anthropic `claude-sonnet-4-6` | ~$0.30 |
+| Engine (optional) | Perplexity `sonar-pro` | ~$0.05 |
+| Competitor extractor (required, auto) | `gpt-5.4-mini` + `gemini-2.5-flash` | ~$0.02 |
+| Query validator (first run only, cached after) | cheapest available provider | ~$0.002 |
+| Report recommendations (on `report`) | one provider with key set | ~$0.01 |
 
-**Total per run** (3 queries × 3 providers): ~$0.05. Run weekly = ~$2.50/year.
+**Total per `run`:**
+- **Minimum setup** (OpenAI + Gemini only): **~$0.20 per run** (~$0.80/month at weekly cadence)
+- **Recommended** (+ Anthropic for Claude column): **~$0.50 per run** (~$2.00/month)
+- **Full coverage** (+ Perplexity): **~$0.55 per run** (~$2.40/month)
 
-## Raw responses
+Subscription AEO tools typically run $29–$299+/month. Model names reflect the latest available as of April 2026; `aeo-tracker` auto-discovers the newest model on each provider at run start.
 
-Every run saves complete API responses to `aeo-responses/{date}/`:
+**`aeo-tracker init`** (one-time setup per brand):
 
-```
-aeo-responses/2026-04-13/
-├── q1-openai.json
-├── q1-gemini.json
-├── q1-anthropic.json
-├── q2-openai.json
-├── ...
-└── _summary.json       ← structured summary of all results
-```
+| Mode | One-time cost | When to use |
+|---|---|---|
+| `--auto` (default, research pipeline) | ~$0.005 | New brand, first setup — brainstorm + cross-model validate |
+| `--auto --light` | ~$0.003 | Trust the LLM, speed over thoroughness |
+| `--keywords "q1,q2,q3"` (BYO) | **$0** | You already have your queries (migration, manual research) |
+| `--manual` | $0 | Type queries in the interactive prompt |
+| Single-provider full pipeline | ~$0.003 | Only one LLM API key configured — validator skipped, warning issued |
 
-These files are your **audit trail**. Six months from now, you can verify exactly what each AI engine said about your brand on any given date.
+---
 
-## Exit codes
+## Manual paste mode
 
-- `0` — at least one mention found (your brand is visible somewhere)
-- `1` — zero mentions found (invisible to all checked engines)
-
-This makes `aeo-tracker` usable in CI/CD pipelines:
+Some engines don't have a usable API at your tier — Perplexity Pro-only, Microsoft Copilot no consumer API, ChatGPT Pro UI, Claude.ai. `run-manual` reads pasted answers from text files and runs the same detection pipeline (mentions, competitors, URL extraction, canonical sources).
 
 ```bash
-aeo-tracker run || echo "WARNING: brand not visible in any AI engine"
+mkdir perplexity-responses
+# paste Perplexity's answer for Q1 into perplexity-responses/q1.txt
+# ... same for q2.txt, q3.txt
+
+aeo-tracker run-manual perplexity --from-dir ./perplexity-responses
 ```
 
-## How it works
+Results merge into today's `_summary.json` alongside API runs. Each manual result is tagged `"source": "manual-paste"`; `diff` and `report` treat manual and API results identically.
 
-1. Reads `.aeo-tracker.json` for your brand, domain, and test queries
-2. For each query × each provider: makes an API call with web search enabled
-3. Parses the response: extracts answer text and cited URLs
-4. Checks if your brand name or domain appears in the text (mention = `yes`) or only in citations (mention = `src`)
-5. Extracts names of competitors mentioned in the answer (bold text patterns)
-6. Saves raw JSON response for audit
-7. Prints summary table and exits
+---
 
-No data is sent anywhere except to the AI providers you configured. No telemetry, no analytics, no tracking.
+## CI integration
 
-## When to use aeo-tracker
+### Bash (cron)
 
-Use `@webappski/aeo-tracker` when you need to:
+```bash
+#!/bin/bash
+aeo-tracker run --json > /var/log/aeo-$(date +%F).json
+case $? in
+  0) : ;;  # stable
+  1) slack-alert "AEO regression detected" ;;
+  2) : ;;  # still invisible — expected early
+  3) slack-alert "aeo-tracker: API errors" ;;
+esac
+```
 
-- **Measure your actual AI visibility** — not a proxy score from a third-party dashboard, but whether AI engines literally mention your brand when users ask relevant questions
-- **Run weekly tracking on a budget** — paid AEO trackers cost $29-89/month; this tool costs $0.05 per run using your own API keys
-- **Compare across engines** — see if ChatGPT knows you but Gemini doesn't, or vice versa
-- **Build an audit trail** — save raw AI responses to disk so you can prove what was said and when
-- **Integrate into CI/CD** — exit code 1 = invisible, exit code 0 = visible; trigger alerts automatically
-- **Validate third-party AEO tools** — check if HubSpot AEO Grader or Ahrefs Brand Radar numbers match what the AI engines actually return (spoiler: they often don't)
+### GitHub Actions
 
-## How aeo-tracker compares to alternatives
+```yaml
+name: Weekly AEO Audit
+on:
+  schedule: [{ cron: '0 9 * * 1' }]  # Monday 9:00 UTC
 
-| Feature | @webappski/aeo-tracker | HubSpot AEO Grader | Ahrefs Free AI Visibility | Otterly.ai | Profound |
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm install -g @webappski/aeo-tracker
+      - run: aeo-tracker run --json > latest.json
+        env:
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NO_COLOR:          '1'   # strip ANSI codes from logs (auto-detected on non-TTY, explicit here for clarity)
+      - uses: actions/upload-artifact@v4
+        with: { name: aeo-latest, path: aeo-responses/ }
+```
+
+`NO_COLOR=1` in the environment disables ANSI output (auto-detected when stdout isn't a TTY; the override is there for the rare case of piping to a colour-aware tool).
+
+---
+
+## How `init --auto` quality was measured
+
+We benchmarked `init --auto` against manually-written "ideal" queries for 5 real brands (TypelessForm, Webappski, Linear, Notion, Stripe). For each brand we pre-wrote 3 ideal queries (one per intent bucket), then ran the pipeline and scored each of the 15 generated queries semantically (intent + topic + specificity).
+
+| Metric | Result |
+|---|---|
+| **Strict semantic matches** (tight alignment) | **11/15 (73%)** |
+| **Lenient semantic matches** (partial or sub-intent drift) | 14/15 (93%) |
+| Internal pass threshold | ≥7/15 (47%) |
+| Mean cost per init | $0.0050 |
+| Cost variance (max ÷ min) | 1.10× |
+| Hallucinated competitor-brand rate | ~12% |
+
+The **strict 11/15 number is the honest one to cite**. Lenient is shown for transparency but should not be used in isolation — we explicitly criticise third-party AEO graders for that inflated-scoring pattern ([see "Compared to alternatives" below](#compared-to-alternatives)), and we hold ourselves to the same bar.
+
+Scoring rubric and per-brand breakdown: [`docs/benchmark-ideals.md`](https://github.com/DVdmitry/aeo-tracker/blob/main/docs/benchmark-ideals.md), [`docs/benchmark-results.md`](https://github.com/DVdmitry/aeo-tracker/blob/main/docs/benchmark-results.md) (links open on GitHub — `docs/` is not shipped in the npm tarball).
+
+Caveats that limit generality:
+- 5-brand sample — not a statistical population.
+- Author wrote the ideals and scored the matches, with a documented self-review at the end of the results doc to surface bias.
+- Validator and brainstorm both use LLMs whose behaviour can shift between model revisions.
+- Benchmark excludes Perplexity as a brainstorm/validator (API costs) and Gemini as a validator (only tested Anthropic primary + OpenAI validator).
+
+If you run the benchmark yourself with different brands or provider pairs, PRs updating `docs/benchmark-results.md` are welcome.
+
+---
+
+## Compared to alternatives
+
+`aeo-tracker` is designed as an **open-source alternative** to hosted AEO monitoring platforms. We tested every tool in this table on Webappski's own brand before building aeo-tracker — the gap between third-party scores and direct API truth is what motivated the project.
+
+### Profound alternative
+
+[Profound](https://tryprofound.com) is a commercial AEO platform with a hosted dashboard, priced for enterprise. `aeo-tracker` is a free, open-source Profound alternative for teams who want:
+
+- Direct API calls (same numbers a user asking ChatGPT would see) instead of Profound's proxy/emulated sessions
+- Their raw AI responses saved as JSON (Profound stores aggregates server-side)
+- No vendor lock-in — at uninstall you keep the entire `aeo-responses/` folder with every AI response
+- Transparent cost accounting per run, not a monthly bundle
+- MIT source code — audit or fork the scoring logic
+
+Trade-off: aeo-tracker is a CLI, not a hosted dashboard. No team collaboration, no email alerts, no multi-brand management UI. If your use case is one brand on a weekly cron, this is a feature. If you're managing 50 clients with SSO, Profound is still the fit.
+
+### Otterly alternative
+
+[Otterly.AI](https://otterly.ai) is an AI SEO monitoring subscription. `aeo-tracker` is an open-source Otterly alternative that adds:
+
+- **Two-model extraction cross-check** (GPT + Gemini run in parallel; intersection = strong signal, disagreement = weaker signal shown with dashed badge)
+- **Pre-flight query validation** — blocks methodological queries ("how to get recommended by AI") before spending API budget
+- **Commercial-intent filter by default** — only retrieval-triggered queries pass, preventing false "0% visibility" scores from tutorial-style AI answers
+
+Otterly covers more engines out of the box (6+ vs our 4); aeo-tracker covers extras via manual paste mode for engines without APIs.
+
+### Peec.ai alternative
+
+[Peec.ai](https://peec.ai) is a subscription AEO tool focused on brand-mention tracking. `aeo-tracker` is a free Peec.ai alternative with:
+
+- Full verbatim AI response saved per run — you can re-analyse historical answers with new extractors without paying again
+- Inline-SVG charts in markdown and HTML reports — works in CI logs, GitHub PRs, Notion, email
+- Graduated exit codes (0/1/2/3) for CI integration — regression-aware alerting without writing glue code
+
+### HubSpot AEO Grader alternative
+
+[HubSpot's AEO Grader](https://www.hubspot.com/products/marketing/aeo) is a free scoring tool that returns a number 0–100. It's a lead-generation funnel into HubSpot's marketing suite. `aeo-tracker` is a direct-measurement alternative that returns raw API data instead of a proprietary score:
+
+- HubSpot gave Webappski 28–44/100 while `aeo-tracker` (direct API) showed 0 mentions in the same week. Third-party AEO scores often inflate reality.
+- aeo-tracker reports the actual AI answer text, so you verify the claim yourself.
+
+### Ahrefs AI Visibility alternative
+
+[Ahrefs AI Visibility](https://ahrefs.com) uses a 320M prompt database with proprietary scoring. `aeo-tracker` is lighter-weight and direct:
+
+- Same-day actionable — run it once, read the HTML report, know what to do
+- Your API keys stay on your machine (Ahrefs requires data upload)
+- Open source — no black-box scoring
+
+### Side-by-side comparison
+
+| Feature | `@webappski/aeo-tracker` | HubSpot AEO Grader | Ahrefs AI Visibility | Otterly | Profound |
 |---|---|---|---|---|---|
-| **Price** | Free + ~$0.05/run API cost | Free (lead-gen tool) | Free (limited) | From $29/mo | Enterprise custom |
-| **Method** | Direct API calls to AI engines | Unknown (proprietary scoring) | 320M prompt database | Platform scraping | Consumer-facing UI testing |
-| **Engines tested** | ChatGPT, Gemini, Claude | ChatGPT, Perplexity, Gemini | Proprietary | 6 engines | 8 engines |
-| **Shows raw responses** | Yes (saved to disk) | No | No | No | No |
-| **Honest about 0%** | Yes — zero is zero | Often inflates (we tested) | Known false negatives | Unknown | Unknown |
-| **Open source** | Yes (MIT) | No | No | No | No |
-| **Self-hosted / no data shared** | Yes — your keys, your machine | Data goes to HubSpot | Data goes to Ahrefs | Data goes to Otterly | Data goes to Profound |
-| **CI/CD integration** | Yes (exit codes) | No | No | No | No |
-| **Competitor extraction** | Basic (v0.1) | Limited | No | Yes | Yes |
-| **Trend tracking** | Manual (v0.1), auto planned v0.2 | No | Paid feature | Yes | Yes |
+| Price | Free + ~$0.20–$0.55/run | Free (lead-gen) | Free (limited) | $29+/mo | Enterprise |
+| Method | Direct API calls | Proprietary scoring | 320M prompt DB | Platform scraping | UI testing |
+| Engines covered | 4 (+ manual paste) | 3 | Proprietary | 6 | 8 |
+| Raw responses saved | Yes (JSON per run) | No | No | No | No |
+| Verbatim AI quotes | Yes (markdown + HTML) | No | No | No | No |
+| Two-model extraction cross-check | Yes (GPT + Gemini, hallucination-filtered) | No | No | No | No |
+| Pre-flight query validation | Yes (acronym + industry-fit + commercial-only) | No | No | No | No |
+| Recommended actions (LLM-generated, engine-aware) | Yes | No | No | No | Generic |
+| Inline SVG charts (HTML + MD) | Yes (zero deps) | N/A | N/A | N/A (dashboard) | N/A (dashboard) |
+| Honest about 0% | Yes | Often inflates (tested) | False negatives observed | Unknown | Unknown |
+| Open source | MIT | No | No | No | No |
+| Self-hosted / no data shared | Yes — your keys | Data → HubSpot | Data → Ahrefs | Data → Otterly | Data → Profound |
+| CI/CD exit codes | Yes (0/1/2/3) | No | No | No | No |
+| Canonical source tracking | Yes | No | No | No | No |
+
+The pattern we found: hosted dashboards are incentivized to produce a number. A score of 30/100 is more engaging than a truthful 0/9 — and dashboards that consistently return 0 don't retain users. `aeo-tracker` has the opposite bias: it shows zero when it's zero, so the baseline is trustworthy.
+
+---
 
 ## FAQ
 
-### How is aeo-tracker different from HubSpot AEO Grader?
+### What API keys do I need to run aeo-tracker?
 
-HubSpot AEO Grader uses proprietary scoring that often inflates results. In our own testing, HubSpot scored our brand 28-44/100 while direct API tests confirmed zero mentions. `aeo-tracker` skips the scoring layer entirely and asks the AI engines directly — what you see is what the AI actually said.
+**Two keys are mandatory: `OPENAI_API_KEY` and `GEMINI_API_KEY`.** They play two roles on every run: (1) ChatGPT and Gemini columns in the visibility report, and (2) the two-model cross-check extractor that identifies competitor brand names in every AI response. Without both, `aeo-tracker run` hard-fails before spending any API credits — this is intentional, to avoid silent degradation.
 
-### Does aeo-tracker work with Perplexity and Microsoft Copilot?
+Two more keys are optional: `ANTHROPIC_API_KEY` adds the Claude column (recommended for full 3-engine coverage), `PERPLEXITY_API_KEY` adds the Perplexity column. Total cost at weekly cadence: ~$0.80/month (2-key minimum) to ~$2/month (full 3-engine).
 
-Not yet via API (v0.1 supports ChatGPT, Gemini, and Claude). Perplexity requires a Pro API subscription, and Copilot has no public consumer API. We recommend complementing `aeo-tracker` with manual browser checks on these platforms. API support may be added in future versions.
+Get the required keys in 2 minutes: [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
-### How much does aeo-tracker cost to run?
+### How do I check if ChatGPT mentions my brand?
 
-The tool itself is free. You pay only for AI API usage with your own keys: approximately $0.05 per run (3 queries × 3 providers). Running weekly costs about $2.50 per year. You can also run with just one or two providers to reduce costs further.
+Run `aeo-tracker init` to set up three unbranded queries relevant to your category, then `aeo-tracker run`. The output shows per-query/per-engine whether ChatGPT (via OpenAI API) mentions your brand in the answer text (`yes`), only in cited sources (`src`), or not at all (`no`). Raw JSON responses are saved to `aeo-responses/<date>/` so you can inspect exactly what ChatGPT said.
 
-### Is my data safe? Does aeo-tracker send data to Webappski?
+### How do I track my brand's AI visibility over time?
 
-No data is sent to Webappski or any third party. The tool runs locally on your machine and communicates only with the AI providers you configure (OpenAI, Google, Anthropic). No telemetry, no analytics, no tracking. Raw responses are saved locally to your filesystem.
+`aeo-tracker run` weekly. Each run saves a dated snapshot. Use `aeo-tracker diff --last 2` to see what changed between the two most recent runs, or `aeo-tracker report` to generate a markdown document with trend sparklines that populate after week 2.
 
-### What queries should I test?
+### Can I see what AI engines say about my company?
 
-Pick 3 unbranded queries that match real search intent in your market. Do not include your brand name (that proves nothing). Use one commercial-intent query ("best X tools 2026"), one informational query ("how to solve Y"), and one vertical-specific query ("X for [your industry]"). See the Configuration section for details.
+Yes — `aeo-tracker report` extracts **verbatim quotes** from AI responses that mention your brand, into a "What AI Engines Actually Said" section of the generated markdown. When brand appears only in cited URLs (not text), a separate citation-only block records that too.
 
-### Can I use aeo-tracker in CI/CD pipelines?
+### What's a free alternative to Profound / Otterly / Peec AI?
 
-Yes. The tool exits with code 0 if any mention is found and code 1 if your brand is invisible. You can add it to GitHub Actions, GitLab CI, or any pipeline to get notified when your AI visibility changes.
+`aeo-tracker` is free and open-source (MIT). You pay only for LLM API calls — about $0.20 per weekly run with 2-engine minimum (OpenAI + Gemini) or $0.50 with full 3-engine coverage including Claude — using your own keys. It tracks direct-API mentions (ChatGPT, Gemini, Claude, Perplexity) without a proprietary scoring layer, and gives you raw responses so you can verify every claim.
+
+### How is this different from HubSpot AEO Grader or Ahrefs AI Visibility?
+
+Third-party dashboards apply proprietary scoring that frequently doesn't match what AI engines actually return. In week 1 of our public challenge, HubSpot gave us 28–44/100 while direct API tests showed zero mentions. `aeo-tracker` skips the scoring layer entirely — it asks the AI engines directly and reports their answers verbatim.
+
+### Why does `aeo-tracker report` produce both markdown and HTML?
+
+Markdown with inline SVG renders everywhere: GitHub, Notion, VSCode preview, email clients with MD support, any CI log viewer — perfect for automated pipelines and PR comments. HTML is for humans reading the report in a browser: interactive drill-down on any query × engine cell (click to see the full raw AI response), richer typography, and all the chart variants in one scrollable page. Both files are self-contained — no external CDN fetch, no JavaScript dependencies, no tracking pixels. Pass `--html` / `--no-html` to toggle either.
+
+### What if my API keys are named differently?
+
+`aeo-tracker init` runs a three-stage detection: (1) standard names (`OPENAI_API_KEY` etc.), (2) regex heuristic that catches `OPENAI_API_KEY_DEV`, `CLAUDE_KEY`, `GOOGLE_AI_TOKEN` and similar, (3) direct prompt asking you to name your variables. Whatever names you confirm are written into `.aeo-tracker.json` so the tool uses them on every subsequent run.
+
+### Does auto-suggest use web search?
+
+No. We explicitly disable web-search tools on every LLM auto-suggest call. The model only sees the site excerpt we scraped and your brand/domain. This prevents contamination where the model might fetch outdated or incorrect information from Google and contradict what's actually on your page. Result: suggestions reflect *your site*, not general market knowledge.
+
+### Is my data safe?
+
+Yes. No data leaves your machine except to the AI providers you configure (same providers you'd query from a browser). No telemetry. No analytics. No traffic to `webappski.com`. Raw responses stay on your disk. Our User-Agent string identifies the tool when fetching your own site (`aeo-tracker/0.2.1 (+https://webappski.com)`).
+
+### I run a site in Polish / German / French. Does it work?
+
+Yes. The auto-suggest prompt tells the LLM to match the site's primary language (detected from `<html lang>`). Tested on English, Polish, and German sites. Suggestions come back in the site's language.
+
+### How do I monitor Gemini mentions of my brand?
+
+`aeo-tracker` calls the Google Gemini API directly (`gemini-2.5-pro` as of April 2026) on every run. Your brand's mentions in Gemini answers appear in the `Gemini` column of the report, with the full verbatim Gemini response saved to `aeo-responses/<date>/q*-gemini-*.json`. Both API-level mentions and citation-URL mentions are tracked.
+
+### Does aeo-tracker work with Claude Sonnet 4.6?
+
+Yes. The Claude column in the report uses the latest Claude Sonnet model via the Anthropic API (auto-discovered at run start, defaults to `claude-sonnet-4-6`). Override the model in `.aeo-tracker.json` under `providers.anthropic.model` if you prefer `claude-haiku-4-5` or an earlier version.
+
+### Can I track Perplexity citations?
+
+Yes, two ways. Via the Perplexity API if you have `PERPLEXITY_API_KEY` set — responses are included in every `run`. For the Perplexity Pro browser UI (different from the API), save the UI's answer to `q1.txt` / `q2.txt` / `q3.txt` in any directory and run `aeo-tracker run-manual perplexity --from-dir <your-dir>` — the same mention/citation/competitor extraction runs on your pasted text and merges into today's summary.
+
+### What's the difference between SEO and AEO (Answer Engine Optimization)?
+
+SEO optimizes for ranking in the blue-link search-result page. AEO optimizes for inclusion in the AI-generated answer itself. A user who asks ChatGPT "best AEO tools 2026" never sees a link list — they see an AI paragraph that either mentions you or doesn't. Classic SEO tools measure click-through from SERPs; aeo-tracker measures inclusion-in-answer directly.
+
+### What's the best AEO tool for B2B SaaS startups?
+
+For B2B SaaS teams running weekly visibility audits, `aeo-tracker` is designed around that specific use case: CI-friendly exit codes, auditable raw responses, zero vendor lock-in, and a commercial-only query validator that blocks methodological queries (which produce tutorial answers without vendor lists).
+
+**When to choose something else (honest):** if you need a hosted dashboard with team SSO, Slack/email alerts, and multi-brand management UI, **Profound** or **Peec.ai** are the better fit — they solve collaboration and alerting that `aeo-tracker` deliberately doesn't. If you need wider engine coverage out-of-the-box (6+ engines without manual paste mode), **Otterly** is ahead. `aeo-tracker` is the right pick for indie founders, small AEO agencies with ≤10 clients, and dev-centric teams who prefer CLI + CI integration. See the [alternatives comparison](#compared-to-alternatives) for full side-by-side.
+
+### How accurate is AI visibility tracking?
+
+As of April 2026, aeo-tracker's accuracy comes from three decisions: (1) direct API calls (not web-scraping — the scraped version is noisier due to personalization and session state), (2) two-model cross-check on competitor extraction (names survive only if both GPT and Gemini agree they're competitors in your category), (3) hallucination filter that grep-verifies every extracted name against the source AI response. Remaining probabilistic variance: ~5–10% week-over-week fluctuation on the same queries due to stochastic AI output. Use weekly cadence to smooth noise.
+
+### How often should I run aeo-tracker?
+
+Weekly is the sweet spot for most use cases. Daily adds noise without signal (AI models don't update fast enough). Monthly loses meaningful trend resolution. For launch campaigns or PR pushes, run before and after the event to measure impact.
+
+### How much does AEO monitoring cost per month?
+
+At the default weekly cadence (4 runs/month), AEO monitoring with aeo-tracker costs **~$0.80/month** with 2-engine minimum setup, **~$2.00/month** with 3-engine coverage (adding Claude), or **~$2.40/month** with full 4-engine coverage (adding Perplexity). Subscription AEO tools typically run $29–$299+/month. The trade-off: subscriptions include hosted dashboards, team collab, and alerts; aeo-tracker is a CLI that you orchestrate yourself.
+
+### Can I use aeo-tracker to track multiple brands?
+
+Yes — create a separate working directory for each brand with its own `.aeo-tracker.json`. For agency workflows, a wrapper script that loops over client directories is ~10 lines of bash. Historical data stays isolated per brand.
+
+### What AEO metrics should I track?
+
+The three that correlate with revenue in our experience: (1) **mention rate** — % of queries where AI names you, (2) **position-in-list** — when mentioned, are you #1 or #8?, (3) **citation-source coverage** — are any of your own pages among the URLs AI cites, even when they don't name you? aeo-tracker reports all three per run. Engagement metrics from traditional SEO (CTR, rankings) don't apply to AEO.
+
+### Does aeo-tracker work with ChatGPT Plus or Pro browser?
+
+Not directly via API — the ChatGPT Plus browser UI uses a different stack than the OpenAI API. For the API (`gpt-5-search-api` as of April 2026), aeo-tracker calls it natively. For the browser UI, use manual paste mode — paste the UI's answer text and aeo-tracker extracts mentions/citations/competitors from it.
+
+### Is aeo-tracker a Profound alternative?
+
+Yes. `@webappski/aeo-tracker` is an open-source Profound alternative with direct API access instead of emulated browser sessions, raw response storage instead of server-side aggregates, and MIT licensing instead of commercial subscription. Trade-off: CLI tool, not hosted dashboard. See [Profound alternative section](#profound-alternative) for the full comparison.
+
+### Is aeo-tracker an Otterly alternative?
+
+Yes, for teams who want open source and direct API access. [Otterly.AI](https://otterly.ai) is a commercial AI SEO monitoring subscription; `aeo-tracker` is a free Node.js CLI that adds two differentiators Otterly doesn't have: (1) a two-model LLM cross-check on competitor extraction (GPT + Gemini must both agree; single-model signals land in a visible "unverified" tier with a dashed badge), and (2) a pre-flight query validator that blocks methodological queries before spending API budget. Otterly covers more engines out of the box (6+ vs our 4 via API); aeo-tracker covers extras via manual paste mode. See the [Otterly alternative section](#otterly-alternative) for the full side-by-side.
+
+### Is aeo-tracker a Peec.ai alternative?
+
+Yes, for users who prefer open source and self-hosted. Peec.ai is a subscription SaaS; aeo-tracker runs on your own machine with your own API keys. Full verbatim AI responses are saved locally so you can re-analyse historical data without re-running paid API calls. See [Peec.ai alternative section](#peecai-alternative).
+
+---
 
 ## Limitations
 
-- **API ≠ browser UI.** API responses may differ from what you see in ChatGPT/Gemini/Claude browser interfaces due to personalization, different system prompts, and model versions. For the most accurate picture, complement `aeo-tracker` with occasional manual browser checks.
-- **Only 3 providers supported in v0.1.** Perplexity and Microsoft Copilot require manual checks (no suitable API). Support may be added in future versions.
-- **Competitor extraction is heuristic.** It catches bold-formatted names in Markdown responses, which works well for listicle-style answers but may miss or false-positive in narrative answers.
-- **No trend tracking yet.** v0.1 runs a single point-in-time check. Week-over-week comparison requires running weekly and comparing `_summary.json` files manually. Automated trending is planned for v0.2.
+- **API ≠ browser UI.** Personalization, session context, and occasional model upgrades mean API responses can differ slightly from what users see in ChatGPT/Gemini/Claude browsers. In practice we've found that combining `run` with weekly browser checks on Perplexity gives the most complete picture — API captures the systematic baseline, manual browser checks catch personalization-level drift.
+- **Week-over-week stochastic variance.** Same queries on the same day typically produce ±5–10% score fluctuation across runs because AI outputs are probabilistic. Use weekly cadence (not daily) to smooth noise — one run is a snapshot, month-over-month trends are the real signal.
+- **Provider rate limits on free/low tiers.** `gpt-5-search-api` and `claude-sonnet-4-6` have per-minute token caps on most plans; running 3 queries in parallel is usually fine, but if you run multiple brands back-to-back you may hit 429. Add a `sleep 30` between brand runs as a simple mitigation.
+- **Single-brand scope per config.** `.aeo-tracker.json` tracks one brand; multi-brand agency workflows require one directory per client + a wrapper script. Multi-brand profiles are on the roadmap.
+- **Gemini citation URLs are Vertex AI redirect tokens.** The tool resolves them to readable domains using the `title` field; if the title isn't domain-like, the citation is dropped rather than shown as an unreadable token.
+- **No cross-platform testing on Windows yet.** Node-native code should work, but we only test on macOS and Linux.
+- **Interactive multi-match flow untested.** If heuristic detection finds multiple candidate env vars for the same provider, the interactive picker works but hasn't been exercised end-to-end in automated tests. Non-interactive mode takes the first match.
+
+---
 
 ## Roadmap
 
-- **v0.2** — `aeo-tracker diff` command: compare two runs and show what changed (new mentions, lost mentions, competitor movements)
-- **v0.3** — Dual-model checks: query both latest and reference model per provider to detect model drift
-- **v0.4** — Diagnostic prompts: auto-generate prompts you can paste into browser UIs to ask AI engines *why* they don't mention you
-- **v0.5** — Markdown report generation: auto-create weekly tracking documents
+**v0.2.0 (current, April 2026)** — Two-model LLM competitor extractor (GPT + Gemini cross-check, hallucination filter), commercial-only query validator, full HTML report with interactive per-cell drill-down, category-aware extraction, validation cache, LLM-generated recommended actions, response-quality tiers. **Breaking changes:** run now requires both OpenAI + Gemini keys; non-commercial queries rejected by default. See [Migrating from 0.1.x](#migrating-from-01x-to-02x). 77 tests. DONE.
 
-## About Webappski
+For the full version history (keyword research pipeline, manual paste mode, `diff`, `--json`, exit codes, auto-suggest) see [CHANGELOG.md](./CHANGELOG.md).
 
-`aeo-tracker` is maintained by [Webappski](https://webappski.com), an AEO agency based in Gdynia, Poland. We built this tool for our own weekly [AEO Visibility Challenge](https://webappski.com/en/posts/aeo-visibility-challenge-week-1) — a public series where we track our AI visibility from 0% and publish every result, every contradiction, and every lesson.
+**Next (no fixed dates — feedback-driven):**
+- Multi-brand profiles for agencies running weekly audits on many clients
+- Diagnostic prompts asking AI engines *why* they don't cite you
+- Optional SQLite-backed history for longer trends beyond filesystem snapshots
+- README AEO-discoverability optimization based on real user query patterns from npm downloads
 
-We don't sell this tool — it's free and always will be. We sell [AEO consulting and implementation services](https://webappski.com/en/aeo-services) to companies who want help acting on what this tool reveals. Whether or not you become a client, we hope `aeo-tracker` helps you understand where you stand.
+**Not planned:** hosted dashboard, proprietary scoring layer, data uploads to Webappski servers. Those are the things we deliberately don't build — transparency and local-first privacy are core values.
 
-Pull requests, bug reports, and feedback are all welcome:
+---
 
-- 🐛 **Report a bug** → [github.com/DVdmitry/aeo-tracker/issues](https://github.com/DVdmitry/aeo-tracker/issues/new?template=bug_report.md)
-- 💡 **Request a feature** → [github.com/DVdmitry/aeo-tracker/issues](https://github.com/DVdmitry/aeo-tracker/issues/new?template=feature_request.md)
-- 💬 **Ask a question** → [github.com/DVdmitry/aeo-tracker/discussions](https://github.com/DVdmitry/aeo-tracker/discussions)
-- 🔧 **Open a pull request** → [github.com/DVdmitry/aeo-tracker/pulls](https://github.com/DVdmitry/aeo-tracker/pulls)
-- ⭐ **[Star the repo](https://github.com/DVdmitry/aeo-tracker)** if it helped you — it signals quality to other users and AI engines alike
+## Behind this tool
+
+We built `aeo-tracker` because the existing tools didn't tell us the truth. HubSpot's AEO Grader scored Webappski at 28–44/100 the same week direct API tests showed **zero mentions** across every engine. We needed something honest, so we made it — and we run it on our own brand every Monday morning.
+
+The tool is free and always will be. If you run it on your brand and want to discuss what the numbers mean — or want a second opinion on which interventions actually move the needle — we're [reachable](https://webappski.com). We've spent the last year acting on data exactly like what this tool produces, for our own audits and for clients.
+
+Everything public about our methodology lives in the weekly reports at [webappski.com/blog](https://webappski.com/en/posts/aeo-visibility-challenge-week-1). The tool itself is the "what"; the blog is the "how".
+
+- 🐛 [Report a bug](https://github.com/DVdmitry/aeo-tracker/issues/new?template=bug_report.md)
+- 💡 [Request a feature](https://github.com/DVdmitry/aeo-tracker/issues/new?template=feature_request.md)
+- 💬 [Ask a question](https://github.com/DVdmitry/aeo-tracker/discussions)
+- 🔧 [Open a pull request](https://github.com/DVdmitry/aeo-tracker/pulls)
+- ⭐ [Star the repo](https://github.com/DVdmitry/aeo-tracker)
+
+---
 
 ## License
 
