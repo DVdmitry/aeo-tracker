@@ -2,6 +2,10 @@
 
 All notable changes to `@webappski/aeo-tracker`.
 
+## [0.2.3] — 2026-04-23
+
+Republish of the 0.2.2 payload. The `0.2.2` slot on npm was occupied by an earlier partial publish, so the full resilience + error-coverage release ships under `0.2.3`. **No code differences vs the intended 0.2.2** — same tests (129/129 green), same features, same config. See [0.2.2 notes](#022--2026-04-23) below for the complete changelog.
+
 ## [0.2.2] — 2026-04-23
 
 Patch release. **No breaking changes, no behavioural changes for existing users with standard env var names.** Bundles the 0.2.1 work (README + internal code quality) with two targeted UX fixes: non-standard env var naming + research-provider resilience.
