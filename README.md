@@ -46,7 +46,7 @@ Zero runtime dependencies, MIT license, ~$0.20/run (2-engine minimum) to ~$0.55/
 - **Architecture:** Direct provider APIs (no web scraping, no third-party dashboard, no vendor lock-in)
 - **Extraction:** Two-model LLM cross-check (GPT + Gemini) with hallucination filter
 - **Validation:** Pre-flight query checks — ambiguous acronym detection + LLM industry-fit + commercial-intent filter
-- **Resilience:** `init --auto` retries across providers on billing/auth/rate-limit errors; actionable error panels on every failure path (top-up links, regenerate-key hints, `--keywords` escape hatch) — no raw Node stack traces unless `AEO_DEBUG=1`
+- **Resilience:** `init --auto` retries across providers on billing/auth/rate-limit errors; **auto-recovers from validator blocks** by swapping in validated alternatives with intent-diversity ranking; actionable error panels on every failure path (top-up links, regenerate-key hints, `--keywords` escape hatch) — no raw Node stack traces unless `AEO_DEBUG=1`
 - **Runtime:** Node.js ≥18, zero runtime dependencies
 - **License:** MIT open source, source code on GitHub
 
@@ -452,7 +452,7 @@ aeo-tracker --help
 
 ### Migrating from 0.1.x to 0.2.x
 
-> **Upgrading from 0.2.0 / 0.2.1 / 0.2.2 to 0.2.3?** No action needed — patches only. 0.2.1 was internal code quality; 0.2.3 (formerly 0.2.2) adds init resilience + actionable error panels (see [Roadmap](#roadmap)). Same config, same env vars, same exit codes.
+> **Upgrading from 0.2.0 / 0.2.1 / 0.2.2 / 0.2.3 to 0.2.4?** No action needed — patches only. 0.2.1 was internal code quality; 0.2.3 (formerly 0.2.2) added init resilience + actionable error panels; 0.2.4 adds validator auto-recovery (see [Roadmap](#roadmap)). Same config, same env vars, same exit codes.
 
 If you're upgrading from a previously-installed `@webappski/aeo-tracker@0.1.x`, 0.2.0 introduces two breaking changes. Neither will silently corrupt your data — each hard-fails with a clear message — but both require a one-time action.
 
@@ -924,7 +924,9 @@ Yes, for users who prefer open source and self-hosted. Peec.ai is a subscription
 
 ## Roadmap
 
-**v0.2.3 (current, 2026-04-23)** — Republish of 0.2.2 payload (npm version slot conflict). No code differences. Init resilience (retry loop across `OpenAI → Gemini → Anthropic` on 402/401/429), full error-coverage matrix (billing / auth / rate-limit / network / filesystem / config / site-fetch / bot-protection), actionable error panels on every failure path (init abort, all-engines-failed, top-level catch), per-provider interactive key prompt for non-standard env var names. **No breaking changes vs 0.2.0.** 129 tests. DONE.
+**v0.2.4 (current, 2026-04-23)** — Validator auto-recovery. When `init --auto` validator blocks a query, init now auto-swaps it with a validated alternative from the research pipeline's candidatePool (intent-diversity ranking), instead of discarding the 5 already-validated alternatives and aborting. `--yes` mode: silent swap + warning line disclosing measurement-semantics shift. TTY mode: numbered prompt `[1-4/m/a]`. Only `informationalIssues` blockers are auto-recoverable — static/llm blockers fall through to actionable panel (substitution unsafe for those). 20 new tests, 149 total green.
+
+**v0.2.3 (2026-04-23)** — Republish of 0.2.2 payload (npm version slot conflict). No code differences. Init resilience (retry loop across `OpenAI → Gemini → Anthropic` on 402/401/429), full error-coverage matrix (billing / auth / rate-limit / network / filesystem / config / site-fetch / bot-protection), actionable error panels on every failure path (init abort, all-engines-failed, top-level catch), per-provider interactive key prompt for non-standard env var names. **No breaking changes vs 0.2.0.** 129 tests. DONE.
 
 **v0.2.0 (2026-04)** — Two-model LLM competitor extractor (GPT + Gemini cross-check, hallucination filter), commercial-only query validator, full HTML report with interactive per-cell drill-down, category-aware extraction, validation cache, LLM-generated recommended actions, response-quality tiers. **Breaking changes:** run now requires both OpenAI + Gemini keys; non-commercial queries rejected by default. See [Migrating from 0.1.x](#migrating-from-01x-to-02x).
 
