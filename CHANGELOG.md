@@ -2,6 +2,40 @@
 
 All notable changes to `@webappski/aeo-tracker`.
 
+## [0.2.5] — 2026-04-23
+
+Patch release. **No breaking changes.** Two UX quality-of-life improvements surfaced by dogfood testing of 0.2.4.
+
+### Added — live TTY spinner during long pipeline phases
+
+Previously: `init --auto` printed `[brainstorm] started` and then sat silently for 10+ seconds while the LLM worked. Users could not distinguish "working" from "network hang" — a poor signal for a 51-second pipeline.
+
+**Fix — `lib/util/spinner.js`:** a TTY-aware spinner renders a live, in-place progress frame with elapsed counter between every `started` and `done`/`failed`/`skipped` event from `research()`. Wired into both `init --auto` and `init --queries-only` call sites via a new `makePipelineReporter(spinner)` helper — the existing `logPhase` callback shape and final-line formatting are preserved byte-for-byte.
+
+**Design constraints:**
+- **TTY-only.** `process.stdout.isTTY === false` (CI, pipes, `--yes` in a script) → all spinner methods are no-op; the original flat log emits unchanged, keeping logs grep-able.
+- **`NO_COLOR=1` respected.** Drops the Unicode braille frames for a cycling ASCII dots fallback (`.  ` / `.. ` / `...`).
+- **Zero dependencies.** Raw `process.stdout.write` with `\r\x1b[2K` clear-line sequences.
+- **SIGINT cleanup.** Registers a one-shot handler so Ctrl+C doesn't leave a half-rendered line in the terminal.
+
+**10 new tests** in `test/spinner.test.js`: `formatElapsed` (ms/s/m formatting), non-TTY no-op with stream capture, `NO_COLOR` ASCII fallback, Unicode + dim-ANSI color mode, final-line emission (with and without trailing newline), clean transition between phases.
+
+### Added — "Next" hint after `run` and `run-manual`
+
+Mirrors the existing post-`init` convention (`Next: aeo-tracker run`). After a successful `run` (exitCode 0/1/2), the command now prints:
+
+```
+Next: aeo-tracker report --html  (or 'aeo-tracker report' for markdown-only)
+```
+
+Guards:
+- **Skipped on exitCode 3** (all engines errored) — no data to report; the `all-engines-failed` panel has already given the user next steps
+- **Skipped in `--json` mode** — programmatic consumers parse JSON; a hint line would corrupt their pipeline
+
+Philosophical choice: **no auto-run** of `report --html` after `run`. Reasons: `run` often lives in CI/cron where an HTML file is useless; auto-open browser hangs on headless machines; `run && report --html` as an explicit UNIX chain is the convention the README already teaches. The hint is the least-surprise nudge.
+
+**159 total tests green** (149 + 10 new).
+
 ## [0.2.4] — 2026-04-23
 
 Patch release. **No breaking changes.** Extends the 0.2.2 actionable-panel philosophy from provider errors into the validator gate — the last hard-abort path in `init --auto`.
