@@ -2,6 +2,36 @@
 
 All notable changes to `@webappski/aeo-tracker`.
 
+## [0.2.4] — 2026-04-23
+
+Patch release. **No breaking changes.** Extends the 0.2.2 actionable-panel philosophy from provider errors into the validator gate — the last hard-abort path in `init --auto`.
+
+### Added — validator auto-recovery
+
+Previously: `init --auto` ran the research pipeline (~51 sec, ~$0.006), produced 3 selected queries + up to 5 validated alternatives in the `candidatePool`, then sent the 3 queries through the commercial-only validator. If the validator blocked any query (e.g. a `problem`-intent query that produces tutorial-style answers rather than a vendor list), init aborted — discarding the 5 already-validated alternatives and forcing the user to copy-paste queries into `--keywords` and rerun the whole pipeline.
+
+This violated the no-silent-fatal-aborts rule (established in 0.2.2). The recovery was data-available but logic-absent.
+
+**Fix — `lib/init/validator-recovery.js`:**
+
+1. **Intent-diversity auto-promotion.** When the validator blocks N queries and `candidatePool` contains N unused validated alternatives, init picks replacements that maximize intent-bucket diversity in the final 3-query set. Rule: highest-scored alternative with an intent bucket not already present in the surviving (non-blocked) queries, falling back to highest-score-any when no bucket diversity is available. For the typelessform case — blocked=`problem` with pool=`[vertical:90, comparison:78×4]` — the tool skips `vertical:90` (already covered by a surviving query) and picks `comparison:78`, yielding a final set with 3 unique intents.
+
+2. **`--yes` (non-interactive) behavior.** Single blocker + recoverable → silent auto-promote with a warning line disclosing the measurement-semantics shift (per senior review: *"measurement shifts from problem→comparison — your visibility score will track a different question than you intended"*). Multi-blocker → actionable panel with a pre-filled `--keywords="..."` command built from the validated pool (safer default — user reviews substitutions before rerunning).
+
+3. **TTY (interactive) behavior.** Numbered prompt per blocker: 4 options `[1-4/m/a]` with Enter = recommended (highest-intent-diversity pick). No `[f] keep original` — global `--force` covers that path, reducing prompt clutter per senior review.
+
+4. **Scope discipline — recovery is narrow by design.** Only `informationalIssues` blockers (wrong intent / `search_behavior !== 'retrieval-triggered'`) are auto-recoverable. `staticIssues` (acronym tripwire) and `llmIssues` (low-confidence verdicts) fall through to the actionable panel — a substitution may introduce the same problem, so silent swap is unsafe. The type guard `isRecoverable(blocker)` gates this.
+
+5. **Re-validation is free.** Substituted queries come from the pipeline's own validationCache, so the second `runTwoStageValidation` call hits the cache for every query — ~0ms, $0.
+
+6. **`runValidationFlow` stays untouched structurally.** Added one opt-in flag `returnBlockersInsteadOfAbort` (default `false`, fully backward-compatible for the 3 existing call sites). Recovery is a new wrapper `runValidationWithRecovery` in `bin/aeo-tracker.js` — wrap, not refactor.
+
+**20 new tests** in `test/validator-recovery.test.js`: `isRecoverable` type-guard branches (informational vs static vs llm), `tryAutoRecover` intent-diversity ranking (1-blocker, 2-blockers, pool-exhausted, empty-pool, duplicate-in-queries, no-intent-data fallback), `formatRecoveryPanel` output shape (pre-filled --keywords from pool, editable templates when pool empty, --force + --category hints, static/llm blocker reason rendering), `formatAutoPromoteWarning` measurement-shift disclosure, `promptBlockedQueryReplacement` all 5 branches (Enter-default, numeric pick, `[m]` manual, `[a]` abort, typo → fallback to recommended). Full suite: **149 tests green**.
+
+### Added — `config_queryIntents` persistence for recovery
+
+The research pipeline's `selectResult.selected[].candidate.intent` now persists in-memory (`config_queryIntents` parallel to `queries`) so validator-recovery can enforce intent-diversity ranking. Not written to `.aeo-tracker.json` — it's transient state, regenerated on next `init`.
+
 ## [0.2.3] — 2026-04-23
 
 Republish of the 0.2.2 payload. The `0.2.2` slot on npm was occupied by an earlier partial publish, so the full resilience + error-coverage release ships under `0.2.3`. **No code differences vs the intended 0.2.2** — same tests (129/129 green), same features, same config. See [0.2.2 notes](#022--2026-04-23) below for the complete changelog.

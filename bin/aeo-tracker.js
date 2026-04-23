@@ -304,6 +304,12 @@ async function runValidationFlow({
   primary, secondary = null, validationCache = [],
   nonInteractive = false, force = false, strictValidation = false,
   onAbort,
+  // 0.2.4 recovery hook: when true, caller wants to inspect blockers and
+  // attempt auto-recovery via validator-recovery.js before any abort. The
+  // flow still prints the validation lines and cost; it just skips the final
+  // interactive prompt / exit call. Default false preserves backward
+  // compatibility for every existing call site.
+  returnBlockersInsteadOfAbort = false,
 }) {
   const willCallLLM = primary && (validationCache || []).length === 0
     ? queries.length > 0
@@ -349,6 +355,10 @@ async function runValidationFlow({
     console.log(`${c.yellow}  --force set — proceeding despite blockers.${c.reset}`);
     return v;
   }
+  if (returnBlockersInsteadOfAbort) {
+    // Caller will decide: auto-recover, prompt, or fall back to panel.
+    return v;
+  }
   if (nonInteractive) {
     console.error(`${c.red}✗ Aborted — queries failed validation. Fix queries or pass --force.${c.reset}`);
     if (onAbort) onAbort(); else process.exit(1);
@@ -365,6 +375,131 @@ async function runValidationFlow({
     if (onAbort) onAbort(); else process.exit(0);
   }
   return v;
+}
+
+/**
+ * Wraps runValidationFlow with auto-recovery for informationalIssues blockers.
+ * Goal (per no-silent-fatal-aborts rule): if the validator blocks queries and
+ * we already have validated alternatives in the candidatePool, try to swap
+ * blocked → alternative with intent-diversity ranking, and re-validate (free
+ * cache hit). Falls back to actionable panel when recovery is not possible.
+ *
+ * Behavior matrix:
+ *   no blockers                     → pass-through
+ *   any static/llm blocker          → actionable panel + exit (substitution unsafe)
+ *   1 informational-blocker + pool  → --yes: auto-promote + warning; TTY: prompt
+ *   2+ informational-blockers  +yes → panel (safer default per senior review)
+ *   2+ informational-blockers  +TTY → prompt for each
+ *   pool exhausted / 0 substitutes  → actionable panel + exit
+ *
+ * Returns the final validation object (with substituted queries reflected in
+ * v.updatedCache) and the possibly-modified queries array. Never calls
+ * process.exit on the happy-path; caller handles error exit when
+ * recoveryFailed is true.
+ */
+async function runValidationWithRecovery({
+  queries, queryIntents = [], candidatePool = [],
+  brand, domain, category, geography = [],
+  primary, secondary = null, validationCache = [],
+  nonInteractive = false, force = false, strictValidation = false,
+  ask, useColor = true,
+}) {
+  const v = await runValidationFlow({
+    queries, brand, domain, category, geography,
+    primary, secondary, validationCache,
+    nonInteractive, force, strictValidation,
+    returnBlockersInsteadOfAbort: true,
+  });
+
+  const info = v.informationalIssues || [];
+  const hasStatic = (v.staticIssues || []).length > 0;
+  const hasLlm = (v.llmIssues || []).length > 0;
+  const hasInfo = info.length > 0;
+
+  if (force || (!hasStatic && !hasLlm && !hasInfo)) {
+    return { v, queries, recoveryFailed: false };
+  }
+
+  const {
+    tryAutoRecover, formatRecoveryPanel, formatAutoPromoteWarning,
+    promptBlockedQueryReplacement,
+  } = await import('../lib/init/validator-recovery.js');
+
+  const printPanel = (allBlockers) => {
+    const lines = formatRecoveryPanel({
+      allBlockers, candidatePool, currentQueries: queries,
+      brand, domain, useColor,
+    });
+    for (const ln of lines) console.log(ln);
+  };
+
+  // Unsafe blockers: any static/llm issue → panel (cannot auto-recover).
+  if (hasStatic || hasLlm) {
+    printPanel([...(v.staticIssues || []), ...(v.llmIssues || []), ...info]);
+    return { v, queries, recoveryFailed: true };
+  }
+
+  // All blockers are informational. Attempt recovery.
+  const queriesWithIntent = queries.map((t, i) => ({ text: t, intent: queryIntents[i] || '' }));
+  const recover = tryAutoRecover({
+    blockers: info, queries: queriesWithIntent, candidatePool,
+  });
+
+  if (recover.unresolvedBlockers.length > 0) {
+    printPanel(info);
+    return { v, queries, recoveryFailed: true };
+  }
+
+  // --yes + single blocker → auto-promote silently. --yes + multi → panel.
+  if (nonInteractive) {
+    if (info.length > 1) {
+      printPanel(info);
+      return { v, queries, recoveryFailed: true };
+    }
+    for (const sub of recover.substitutions) {
+      for (const ln of formatAutoPromoteWarning(sub, useColor)) console.log(ln);
+    }
+  } else {
+    // TTY: prompt for each blocker. User may override the auto-recovered pick.
+    const newQueries = [...queries];
+    const usedTexts = new Set(newQueries);
+    for (const blocker of info) {
+      const available = candidatePool.filter(c => !usedTexts.has(c.text));
+      const choice = await promptBlockedQueryReplacement({
+        blocker, available, ask, useColor,
+      });
+      if (choice.action === 'abort') {
+        printPanel(info);
+        return { v, queries, recoveryFailed: true };
+      }
+      if (choice.action === 'manual') {
+        const typed = (await ask('  Type your replacement: ')).trim();
+        if (!typed) {
+          printPanel(info);
+          return { v, queries, recoveryFailed: true };
+        }
+        const idx = newQueries.indexOf(blocker.query);
+        if (idx >= 0) newQueries[idx] = typed;
+        usedTexts.add(typed);
+      } else {
+        const idx = newQueries.indexOf(blocker.query);
+        if (idx >= 0) newQueries[idx] = choice.text;
+        usedTexts.add(choice.text);
+      }
+    }
+    recover.newQueries = newQueries;
+  }
+
+  // Re-validate substituted queries. Free: all substitutes came from the
+  // pool which is already in validationCache → cache hit on every query.
+  const v2 = await runValidationFlow({
+    queries: recover.newQueries, brand, domain, category, geography,
+    primary, secondary, validationCache: v.updatedCache || validationCache,
+    nonInteractive, force: true /* substitutes are pre-validated */,
+    strictValidation, returnBlockersInsteadOfAbort: true,
+  });
+
+  return { v: v2, queries: recover.newQueries, recoveryFailed: false };
 }
 
 // ─── Commands ───
@@ -710,6 +845,12 @@ async function cmdInit(opts = {}) {
   let categoryDescription = '';
   let suggestionLang = '';
   let config_candidatePool = [];
+  // Parallel to `queries`, carries the intent bucket per selected query.
+  // Used by validator-recovery to enforce intent-diversity when auto-swapping
+  // blocked queries. Populated only in the --auto research pipeline path;
+  // stays empty in manual / --keywords / single-shot modes — recovery falls
+  // back to highest-score ranking when intents are unknown.
+  let config_queryIntents = [];
 
   // P2: BYO keywords (`--keywords="q1,q2,q3"`) — skip brainstorm entirely, $0 LLM cost
   if (opts.keywords) {
@@ -874,6 +1015,14 @@ async function cmdInit(opts = {}) {
                   queries = selectResult.selected.map(s => s.candidate.text);
                 }
 
+                // Capture intent per final query for validator-recovery. When user
+                // edited a query by hand, text may not match any candidate — intent
+                // falls back to the slot's selected candidate intent (best effort).
+                config_queryIntents = queries.map((qt, i) => {
+                  const match = selectResult.selected.find(s => s.candidate.text === qt);
+                  return match?.candidate.intent || selectResult.selected[i]?.candidate.intent || '';
+                });
+
                 // Persist candidate pool for future swap-without-LLM (D3)
                 if (selectResult.alternatives.length > 0) {
                   config_candidatePool = selectResult.alternatives.slice(0, 5).map(a => ({
@@ -986,8 +1135,10 @@ async function cmdInit(opts = {}) {
   // can trust verdicts without re-paying $0.005 on every invocation.
   const validationProviders = await buildResearchProviders(providerKey);
   const _geoForValidation = (typeof geoTags !== 'undefined' && geoTags) ? geoTags : detectGeography(domain, {});
-  const validation = await runValidationFlow({
+  const recovery = await runValidationWithRecovery({
     queries,
+    queryIntents: config_queryIntents,
+    candidatePool: config_candidatePool,
     brand, domain,
     category: categoryDescription,
     geography: _geoForValidation,
@@ -997,7 +1148,16 @@ async function cmdInit(opts = {}) {
     nonInteractive,
     force: opts.force,
     strictValidation: opts.strictValidation,
+    ask, useColor: !!c.red,
   });
+  if (recovery.recoveryFailed) {
+    // Panel already printed. Exit with code 1 — validation failed, user has
+    // a copy-paste command to retry.
+    closeRl();
+    process.exit(1);
+  }
+  queries = recovery.queries;
+  const validation = recovery.v;
 
   // P1.3: MODELS from single source of truth
   const MODELS = Object.fromEntries(
