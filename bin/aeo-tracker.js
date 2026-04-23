@@ -31,6 +31,7 @@ import { classifyProviderError } from '../lib/providers/classify-error.js';
 import { formatResearchFailurePanel } from '../lib/init/research-failure-panel.js';
 import { formatAllEnginesFailedPanel } from '../lib/errors/all-engines-failed-panel.js';
 import { formatUnexpectedErrorPanel } from '../lib/errors/unexpected-error-panel.js';
+import { createSpinner } from '../lib/util/spinner.js';
 
 /**
  * Safely extract a human-readable message from any caught value.
@@ -502,6 +503,46 @@ async function runValidationWithRecovery({
   return { v: v2, queries: recover.newQueries, recoveryFailed: false };
 }
 
+/**
+ * Wraps a research() logPhase callback so that long-running phases (brainstorm,
+ * validate, simulate) show a live TTY spinner between 'started' and
+ * 'done'/'failed'/'skipped'. Non-TTY output stays identical to the pre-spinner
+ * flat log — no \r tricks, no animated frames — which keeps CI logs grep-able.
+ *
+ * Caller owns the final-line format (same parts builder as before, preserved
+ * byte-for-byte). Spinner only occupies the "live" render between events.
+ *
+ * @param {ReturnType<typeof createSpinner>} spinner
+ * @returns {(evt: {phase:string,status:string,details?:object}) => void}
+ */
+function makePipelineReporter(spinner) {
+  const isTTY = !!process.stdout.isTTY;
+  return ({ phase, status, details }) => {
+    const parts = [`${c.dim}  [${phase}]`, status];
+    if (details?.count !== undefined) parts.push(`(${details.count})`);
+    if (details?.kept !== undefined) parts.push(`kept=${details.kept} rejected=${details.rejected}`);
+    if (details?.topScore !== undefined) parts.push(`topScore=${details.topScore}`);
+    if (details?.validator) parts.push(`via ${details.validator}`);
+    if (details?.passed !== undefined) parts.push(`passed=${details.passed} rejected=${details.rejected ?? details.failed}`);
+    if (details?.reason) parts.push(`— ${details.reason}`);
+    const line = parts.join(' ') + c.reset;
+
+    if (status === 'started') {
+      spinner.start(`[${phase}] running...`);
+      if (!isTTY) console.log(line);
+    } else if (status === 'attempt') {
+      const pos = details?.attempt && details?.total
+        ? ` attempt ${details.attempt}/${details.total}`
+        : ' attempt';
+      spinner.update(`[${phase}]${pos}`);
+      if (!isTTY) console.log(line);
+    } else {
+      // done | failed | skipped — caller-owned final line
+      spinner.stop(line);
+    }
+  };
+}
+
 // ─── Commands ───
 
 async function cmdInit(opts = {}) {
@@ -573,17 +614,12 @@ async function cmdInit(opts = {}) {
 
     let newQueries = [];
     let newCandidatePool = [];
+    const queriesOnlySpinner = createSpinner();
     try {
       const researchResult = await research({
         brand, domain: existingDomain, site, category: categoryDescription,
         audienceTags, geoTags, primary, validator,
-        logPhase: ({ phase, status, details }) => {
-          const parts = [`${c.dim}  [${phase}]`, status];
-          if (details?.count !== undefined) parts.push(`(${details.count})`);
-          if (details?.kept !== undefined) parts.push(`kept=${details.kept} rejected=${details.rejected}`);
-          if (details?.topScore !== undefined) parts.push(`topScore=${details.topScore}`);
-          console.log(parts.join(' ') + c.reset);
-        },
+        logPhase: makePipelineReporter(queriesOnlySpinner),
       });
       const selectResult = selectTopThree(researchResult.candidates, { validationSkipped: !validator });
       console.log(`\n${c.dim}  pipeline cost ~$${researchResult.trace.estimatedCostUsd.toFixed(4)}${c.reset}\n`);
@@ -978,21 +1014,12 @@ async function cmdInit(opts = {}) {
 
                 if (i === 0) console.log(`${c.dim}  [full pipeline] brainstorm → filter → score → cross-model validate${c.reset}`);
                 const t0 = Date.now();
+                const autoSpinner = createSpinner();
                 const researchResult = await research({
                   brand, domain, site, category: categoryDescription,
                   audienceTags, geoTags,
                   primary, validator,
-                  logPhase: ({ phase, status, details }) => {
-                    const parts = [`${c.dim}  [${phase}]`, status];
-                    if (details?.count !== undefined) parts.push(`(${details.count})`);
-                    if (details?.kept !== undefined) parts.push(`kept=${details.kept} rejected=${details.rejected}`);
-                    if (details?.topScore !== undefined) parts.push(`topScore=${details.topScore}`);
-                    if (details?.validator) parts.push(`via ${details.validator}`);
-                    if (details?.passed !== undefined) parts.push(`passed=${details.passed} rejected=${details.rejected ?? details.failed}`);
-                    if (details?.reason) parts.push(`— ${details.reason}`);
-                    console.log(parts.join(' ') + c.reset);
-
-                  },
+                  logPhase: makePipelineReporter(autoSpinner),
                 });
                 const selectResult = selectTopThree(researchResult.candidates, { validationSkipped: !validator });
                 const elapsed = Date.now() - t0;
@@ -1674,6 +1701,11 @@ async function cmdRun(options = {}) {
       scoreDelta: previousScore !== null ? score - previousScore : null,
     };
     origWrite(JSON.stringify(jsonOut, null, 2) + '\n');
+  } else if (exitCode !== 3) {
+    // Next-step hint. Mirrors init's "Next: aeo-tracker run" convention.
+    // Skipped on exitCode 3 (all engines errored — no data to report) and in
+    // --json mode (programmatic consumers parse the JSON only).
+    console.log(`\nNext: ${c.cyan}aeo-tracker report --html${c.reset}  ${c.dim}(or 'aeo-tracker report' for markdown-only)${c.reset}\n`);
   }
 
   process.exit(exitCode);
@@ -2696,6 +2728,10 @@ async function cmdRunManual(argv) {
   if (mentions === 0) exitCode = 2;
   else if (previousScore !== null && score - previousScore < -regressionThreshold) exitCode = 1;
   else exitCode = 0;
+
+  // Next-step hint (mirrors cmdRun). run-manual has no exitCode 3 or silent
+  // mode, so no guards needed.
+  console.log(`\nNext: ${c.cyan}aeo-tracker report --html${c.reset}  ${c.dim}(or 'aeo-tracker report' for markdown-only)${c.reset}\n`);
 
   process.exit(exitCode);
 }
