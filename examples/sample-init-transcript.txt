@@ -1,0 +1,41 @@
+$ aeo-tracker init --yes --brand=Webappski --domain=webappski.com --auto
+
+@webappski/aeo-tracker — init
+
+Checking environment for API keys...
+  Standard names not set
+
+  Heuristic match — these look like API keys under non-standard names:
+    ? OpenAI (ChatGPT): OPENAI_API_KEY_DEV
+    ? Google (Gemini): GEMINI_API_KEY_DEV
+    ? Anthropic (Claude): ANTHROPIC_API_KEY_DEV
+
+Configured providers: OpenAI (ChatGPT), Google (Gemini), Anthropic (Claude)
+
+Auto-suggest will:
+  1. Fetch https://webappski.com from your machine
+  2. Extract title, meta, headings, first 2KB of body text
+  3. Send that excerpt to Anthropic (Claude) (claude-sonnet-4-6) via YOUR API key
+  4. Show you the suggested queries + competitors before saving
+  Your API key never leaves this machine. No telemetry. No analytics. No traffic to webappski.com.
+  Fetching https://webappski.com... (164,613 bytes, via https://webappski.com/en)
+  Estimated: ~785 input tokens (~$0.0024)
+  Asking Anthropic (Claude)... (attempt 1/2)
+
+Suggested queries (language: en)
+  Q1: best AEO services 2026
+  Q2: how to get your product visible in ChatGPT and Perplexity
+  Q3: answer engine optimization for SaaS startups
+
+Suggested competitors
+  - Profound
+  - Goodie
+  - Daydream
+  - AI Search Grader
+  - Peec AI
+
+✓ Created .aeo-tracker.json
+  Brand: Webappski | Domain: webappski.com
+  Queries: 3, Competitors: 5, Providers: 3
+
+Next: aeo-tracker run

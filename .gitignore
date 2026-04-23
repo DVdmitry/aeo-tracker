@@ -2,6 +2,15 @@ node_modules/
 .env
 .env.*
 aeo-responses/
+aeo-reports/
 .aeo-tracker.json
 *.log
 .DS_Store
+
+# IDE / editor / agent local state
+.idea/
+.vscode/
+.claude/
+
+# Tarball from `npm pack`
+*.tgz

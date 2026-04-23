@@ -1,0 +1,23 @@
+$ aeo-tracker diff --last 2
+
+@webappski/aeo-tracker — diff
+Brand: Webappski
+From: 2026-04-12 — score 22% (2/9)
+To:   2026-04-19 — score 33% (3/9)
+Score delta: +11pp
+
+  Cell changes:
+    ↑ Gained   gemini     Q1   no      → yes
+    ↑ Gained   anthropic  Q2   no      → src
+
+  New competitors:
+    + Otterly (appeared 3/9 times)
+
+  Competitors that fell off:
+    - HubSpot (was 2, now 0)
+
+  New canonical sources:
+    + https://minuttia.com (2×)
+    + https://respona.com (1×)
+
+# exit code: 0 (score stable or improved)

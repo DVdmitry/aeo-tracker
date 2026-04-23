@@ -1,0 +1,17 @@
+{
+  "brand": "Webappski",
+  "domain": "webappski.com",
+  "category": "Answer Engine Optimization (AEO) services — tools and agencies helping brands get cited by AI answer engines like ChatGPT, Gemini, Claude, and Perplexity.",
+  "queries": [
+    "best Answer Engine Optimization agencies 2026",
+    "how to measure AI search visibility for SaaS",
+    "Answer Engine Optimization consultants for B2B startups"
+  ],
+  "regressionThreshold": 10,
+  "providers": {
+    "openai":    { "model": "gpt-5-search-api",  "env": "OPENAI_API_KEY_DEV" },
+    "gemini":    { "model": "gemini-2.5-flash",   "env": "GEMINI_API_KEY_DEV" },
+    "anthropic": { "model": "claude-sonnet-4-6",  "env": "ANTHROPIC_API_KEY_DEV" },
+    "perplexity":{ "model": "sonar-pro",          "env": "PERPLEXITY_API_KEY_DEV" }
+  }
+}
