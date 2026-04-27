@@ -20,7 +20,7 @@ aeo-tracker init --yes --brand=YOURBRAND --domain=YOURDOMAIN.COM --auto \
   && aeo-tracker report --html
 ```
 
-**Cost:** ~$0.20 per run at the 2-key minimum. **Get keys (2 min):** [OpenAI](https://platform.openai.com/api-keys) · [Google AI Studio](https://aistudio.google.com/apikey). **Optional engine columns:** [Claude](https://console.anthropic.com/settings/keys) (+~$0.30), [Perplexity](https://docs.perplexity.ai/) (+~$0.05).
+**Cost:** ≈$0.20 per run at the 2-key minimum. **Get keys (2 min):** [OpenAI](https://platform.openai.com/api-keys) · [Google AI Studio](https://aistudio.google.com/apikey). **Optional engine columns:** [Claude](https://console.anthropic.com/settings/keys) (+≈$0.30), [Perplexity](https://docs.perplexity.ai/) (+≈$0.05).
 
 > **Never opened a terminal before?** Jump to [Path B — first time in a terminal](#path-b--first-time-in-a-terminal-510-minutes) for a 5-minute walkthrough. **Want the full context first?** See [Key facts](#key-facts) and [What you see in the report](#what-you-see-in-the-report) below.
 
@@ -28,19 +28,19 @@ aeo-tracker init --yes --brand=YOURBRAND --domain=YOURDOMAIN.COM --auto \
 
 `@webappski/aeo-tracker` is a Node.js CLI that measures how often AI answer engines mention your brand, tracks your position in ranked AI answers, extracts competitor mentions, saves verbatim AI quotes for audit, and produces a prioritised, engine-specific action plan (e.g. *"email editors of firstpagesage.com to get added to their AEO agency list — cited 2× by AI this run"*).
 
-**Minimum setup needs 2 API keys: OpenAI + Gemini (~$0.20/run).** That covers the ChatGPT and Gemini columns of the report. Add `ANTHROPIC_API_KEY` to unlock the Claude column (~$0.50/run total) or `PERPLEXITY_API_KEY` for the Perplexity column (~$0.55/run). OpenAI + Gemini are required because they also power the two-model extractor described below — Anthropic and Perplexity are strictly optional engine expansions.
+**Minimum setup needs 2 API keys: OpenAI + Gemini (≈$0.20/run).** That covers the ChatGPT and Gemini columns of the report. Add `ANTHROPIC_API_KEY` to unlock the Claude column (≈$0.50/run total) or `PERPLEXITY_API_KEY` for the Perplexity column (≈$0.55/run). OpenAI + Gemini are required because they also power the two-model extractor described below — Anthropic and Perplexity are strictly optional engine expansions.
 
 **As of April 2026, `@webappski/aeo-tracker` is the only open-source AEO tracker that calls ChatGPT, Gemini, Claude, and Perplexity via official APIs** — no web scraping, no proxied browser sessions, no third-party scoring layer between you and the raw AI output.
 
 It also uses a **two-model LLM cross-check on competitor extraction** (`gpt-5.4-mini` + `gemini-2.5-flash` — the two cheap classification models, not the engine-measurement models): every brand name extracted from an AI response is independently verified against the source text by both models. If only one model found it, the name lands in the "unverified" tier of the report (dashed badge); if both agreed, it's "verified" (solid badge). Hallucinated brand mentions are filtered out automatically — a defense subscription competitors don't offer.
 
-Zero runtime dependencies, MIT license, ~$0.20/run (2-engine minimum) to ~$0.55/run (full 4-engine coverage) using your own API keys. Works with Node.js 18+ on macOS, Linux, and Windows.
+Zero runtime dependencies, MIT license, ≈$0.20/run (2-engine minimum) to ≈$0.55/run (full 4-engine coverage) using your own API keys. Works with Node.js 18+ on macOS, Linux, and Windows.
 
 ### Key facts
 
-- **Pricing:** Free (MIT license) + API spend — **~$0.20/run** (2-engine minimum) to **~$0.55/run** (full 4-engine coverage)
+- **Pricing:** Free (MIT license) + API spend — **≈$0.20/run** (2-engine minimum) to **≈$0.55/run** (full 4-engine coverage)
 - **Required API keys:** **OpenAI + Gemini** (both needed — they power the two-model competitor extractor and serve as the ChatGPT + Gemini columns in the report)
-- **Optional API keys:** Anthropic (adds Claude column, ~$0.30/run), Perplexity (adds Perplexity column, ~$0.05/run)
+- **Optional API keys:** Anthropic (adds Claude column, ≈$0.30/run), Perplexity (adds Perplexity column, ≈$0.05/run)
 - **Supported AI engines measured:** ChatGPT (OpenAI), Gemini (Google), Claude (Anthropic), Perplexity — plus manual paste mode for Perplexity Pro, Bing Copilot, ChatGPT Pro UI
 - **Outputs:** Markdown report with inline SVG charts + full HTML report with interactive drill-down
 - **Architecture:** Direct provider APIs (no web scraping, no third-party dashboard, no vendor lock-in)
@@ -228,12 +228,12 @@ In CI (`aeo-tracker init --yes`), Stage 3 (interactive prompt) is disabled — C
 |---|---|---|
 | OpenAI (required) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | Create a "project" key — scoped to this project only. Starts with `sk-proj-`. |
 | Google Gemini (required) | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Starts with `AIzaSy`. Free tier covers weekly cadence for one brand. |
-| Anthropic Claude (optional) | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) | Adds Claude column (~$0.30/run). Starts with `sk-ant-`. |
-| Perplexity (optional) | [docs.perplexity.ai](https://docs.perplexity.ai/) | Adds Perplexity column (~$0.05/run). Starts with `pplx-`. |
+| Anthropic Claude (optional) | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) | Adds Claude column (≈$0.30/run). Starts with `sk-ant-`. |
+| Perplexity (optional) | [docs.perplexity.ai](https://docs.perplexity.ai/) | Adds Perplexity column (≈$0.05/run). Starts with `pplx-`. |
 
-First run costs ~$0.20 at the 2-key minimum.
+First run costs ≈$0.20 at the 2-key minimum.
 
-## Your first run will show 0% — that's normal
+## Your first run may show 0% — that's normal
 
 New brands typically score **0–5% in the first 4 weeks**. AEO visibility compounds slowly: AI models don't learn about new brands in real time. They update when third-party sources (blog posts, directories, review sites) start mentioning you. `aeo-tracker` is designed to track that compounding — the value is in week-over-week deltas, not the absolute score on day 1. The `Recommended actions` section of every report tells you exactly which third-party sources to pitch to move the needle.
 
@@ -361,7 +361,7 @@ Auto-suggest will:
   Your API key never leaves this machine. No telemetry. Nothing is sent to webappski.com.
 
   Fetching https://YOURDOMAIN.COM... (~165KB)
-  Asking Anthropic (Claude)... (~$0.0024)
+  Asking Anthropic (Claude)... (≈$0.0024)
 
 Suggested queries (language: en, commercial-only)
   Q1: best YOURCATEGORY services 2026
@@ -391,7 +391,7 @@ The value of `aeo-tracker` compounds with history. From our own weekly audits, *
 
 | Day | Command | What you see | What's written to disk |
 |---|---|---|---|
-| 0 | `aeo-tracker init` | Auto-suggest from your site, ~$0.0024 | `.aeo-tracker.json` |
+| 0 | `aeo-tracker init` | Auto-suggest from your site, ≈$0.0024 | `.aeo-tracker.json` |
 | 1 | `aeo-tracker run` | Baseline score (often 0% for young brands), exit code 2 | `aeo-responses/YYYY-MM-DD/` (9 raw JSON + `_summary.json`) |
 | 1 | `aeo-tracker report` | Markdown + HTML with heatmap, verbatim quotes when mentions exist, competitor barchart | `aeo-reports/YYYY-MM-DD/report.md` |
 | +7 | `aeo-tracker run` | Second snapshot, 1 week later | `aeo-responses/YYYY-MM-DD/` |
@@ -464,7 +464,7 @@ If you're upgrading from a previously-installed `@webappski/aeo-tracker@0.1.x`, 
 aeo-tracker init --queries-only
 ```
 
-This keeps your brand, domain, and provider config; only the 3 queries are refreshed and revalidated. Cost: ~$0.01. Old `competitors: [...]` field and outdated model names in the config are auto-migrated (silently ignored / auto-upgraded respectively).
+This keeps your brand, domain, and provider config; only the 3 queries are refreshed and revalidated. Cost: ≈$0.01. Old `competitors: [...]` field and outdated model names in the config are auto-migrated (silently ignored / auto-upgraded respectively).
 
 **Escape hatch:** if for research reasons you want to keep a non-commercial query temporarily, `aeo-tracker run --force` bypasses the validator gate for one run. Not recommended for normal weekly tracking.
 
@@ -490,7 +490,7 @@ aeo-tracker run
 aeo-tracker report --html
 ```
 
-The entire first-run flow takes ~60 seconds and costs ~$0.20 in API calls at 2-key minimum setup.
+The entire first-run flow takes ~60 seconds and costs ≈$0.20 in API calls at 2-key minimum setup.
 
 ---
 
@@ -605,18 +605,18 @@ Tune the threshold in `.aeo-tracker.json`:
 
 | Role | Provider / Model | ≈ cost per run (3 queries) |
 |---|---|---|
-| Engine (required) | OpenAI `gpt-5-search-api` | ~$0.13 |
-| Engine (required) | Google `gemini-2.5-pro` | ~$0.03 |
-| Engine (optional) | Anthropic `claude-sonnet-4-6` | ~$0.30 |
-| Engine (optional) | Perplexity `sonar-pro` | ~$0.05 |
-| Competitor extractor (required, auto) | `gpt-5.4-mini` + `gemini-2.5-flash` | ~$0.02 |
-| Query validator (first run only, cached after) | cheapest available provider | ~$0.002 |
-| Report recommendations (on `report`) | one provider with key set | ~$0.01 |
+| Engine (required) | OpenAI `gpt-5-search-api` | ≈$0.13 |
+| Engine (required) | Google `gemini-2.5-pro` | ≈$0.03 |
+| Engine (optional) | Anthropic `claude-sonnet-4-6` | ≈$0.30 |
+| Engine (optional) | Perplexity `sonar-pro` | ≈$0.05 |
+| Competitor extractor (required, auto) | `gpt-5.4-mini` + `gemini-2.5-flash` | ≈$0.02 |
+| Query validator (first run only, cached after) | cheapest available provider | ≈$0.002 |
+| Report recommendations (on `report`) | one provider with key set | ≈$0.01 |
 
 **Total per `run`:**
-- **Minimum setup** (OpenAI + Gemini only): **~$0.20 per run** (~$0.80/month at weekly cadence)
-- **Recommended** (+ Anthropic for Claude column): **~$0.50 per run** (~$2.00/month)
-- **Full coverage** (+ Perplexity): **~$0.55 per run** (~$2.40/month)
+- **Minimum setup** (OpenAI + Gemini only): **≈$0.20 per run** (≈$0.80/month at weekly cadence)
+- **Recommended** (+ Anthropic for Claude column): **≈$0.50 per run** (≈$2.00/month)
+- **Full coverage** (+ Perplexity): **≈$0.55 per run** (≈$2.40/month)
 
 Subscription AEO tools typically run $29–$299+/month. Model names reflect the latest available as of April 2026; `aeo-tracker` auto-discovers the newest model on each provider at run start.
 
@@ -624,11 +624,11 @@ Subscription AEO tools typically run $29–$299+/month. Model names reflect the 
 
 | Mode | One-time cost | When to use |
 |---|---|---|
-| `--auto` (default, research pipeline) | ~$0.005 | New brand, first setup — brainstorm + cross-model validate |
-| `--auto --light` | ~$0.003 | Trust the LLM, speed over thoroughness |
+| `--auto` (default, research pipeline) | ≈$0.005 | New brand, first setup — brainstorm + cross-model validate |
+| `--auto --light` | ≈$0.003 | Trust the LLM, speed over thoroughness |
 | `--keywords "q1,q2,q3"` (BYO) | **$0** | You already have your queries (migration, manual research) |
 | `--manual` | $0 | Type queries in the interactive prompt |
-| Single-provider full pipeline | ~$0.003 | Only one LLM API key configured — validator skipped, warning issued |
+| Single-provider full pipeline | ≈$0.003 | Only one LLM API key configured — validator skipped, warning issued |
 
 ### Environment variables
 
@@ -781,7 +781,7 @@ Otterly covers more engines out of the box (6+ vs our 4); aeo-tracker covers ext
 
 | Feature | `@webappski/aeo-tracker` | HubSpot AEO Grader | Ahrefs AI Visibility | Otterly | Profound |
 |---|---|---|---|---|---|
-| Price | Free + ~$0.20–$0.55/run | Free (lead-gen) | Free (limited) | $29+/mo | Enterprise |
+| Price | Free + ≈$0.20–$0.55/run | Free (lead-gen) | Free (limited) | $29+/mo | Enterprise |
 | Method | Direct API calls | Proprietary scoring | 320M prompt DB | Platform scraping | UI testing |
 | Engines covered | 4 (+ manual paste) | 3 | Proprietary | 6 | 8 |
 | Raw responses saved | Yes (JSON per run) | No | No | No | No |
@@ -806,7 +806,7 @@ The pattern we found: hosted dashboards are incentivized to produce a number. A 
 
 **Two keys are mandatory: `OPENAI_API_KEY` and `GEMINI_API_KEY`.** They play two roles on every run: (1) ChatGPT and Gemini columns in the visibility report, and (2) the two-model cross-check extractor that identifies competitor brand names in every AI response. Without both, `aeo-tracker run` hard-fails before spending any API credits — this is intentional, to avoid silent degradation.
 
-Two more keys are optional: `ANTHROPIC_API_KEY` adds the Claude column (recommended for full 3-engine coverage), `PERPLEXITY_API_KEY` adds the Perplexity column. Total cost at weekly cadence: ~$0.80/month (2-key minimum) to ~$2/month (full 3-engine).
+Two more keys are optional: `ANTHROPIC_API_KEY` adds the Claude column (recommended for full 3-engine coverage), `PERPLEXITY_API_KEY` adds the Perplexity column. Total cost at weekly cadence: ≈$0.80/month (2-key minimum) to ≈$2/month (full 3-engine).
 
 Get the required keys in 2 minutes: [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
@@ -882,7 +882,7 @@ Weekly is the sweet spot for most use cases. Daily adds noise without signal (AI
 
 ### How much does AEO monitoring cost per month?
 
-At the default weekly cadence (4 runs/month), AEO monitoring with aeo-tracker costs **~$0.80/month** with 2-engine minimum setup, **~$2.00/month** with 3-engine coverage (adding Claude), or **~$2.40/month** with full 4-engine coverage (adding Perplexity). Subscription AEO tools typically run $29–$299+/month. The trade-off: subscriptions include hosted dashboards, team collab, and alerts; aeo-tracker is a CLI that you orchestrate yourself.
+At the default weekly cadence (4 runs/month), AEO monitoring with aeo-tracker costs **≈$0.80/month** with 2-engine minimum setup, **≈$2.00/month** with 3-engine coverage (adding Claude), or **≈$2.40/month** with full 4-engine coverage (adding Perplexity). Subscription AEO tools typically run $29–$299+/month. The trade-off: subscriptions include hosted dashboards, team collab, and alerts; aeo-tracker is a CLI that you orchestrate yourself.
 
 ### Can I use aeo-tracker to track multiple brands?
 
