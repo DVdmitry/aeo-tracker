@@ -6,7 +6,8 @@
  * https://webappski.com | MIT License
  */
 
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -17,6 +18,7 @@ import { detectMention, findPosition, extractUrls } from '../lib/mention.js';
 import { diff } from '../lib/diff.js';
 import { renderMarkdown, parseRawResponse } from '../lib/report/markdown.js';
 import { renderHtml } from '../lib/report/html.js';
+import { buildMcMetadata } from '../lib/report/mc-metadata.js';
 import { classifyCitations } from '../lib/report/classify-citations.js';
 import { discoverModels } from '../lib/providers/discover.js';
 import { extractUsage, calcCost } from '../lib/providers/pricing.js';
@@ -25,6 +27,15 @@ import { extractUsage, calcCost } from '../lib/providers/pricing.js';
 import { runTwoStageValidation, formatValidationResult, hasBlockers } from '../lib/init/research/run-validation.js';
 import { classifyResponseQuality } from '../lib/report/response-quality.js';
 import { extractWithTwoModels } from '../lib/report/extract-competitors-llm.js';
+import { classifySentimentWithTwoModels } from '../lib/report/sentiment-classify.js';
+import { detectAdsInResponse, summariseAdsAcrossResults } from '../lib/report/ads-detector.js';
+import { normalizeQueries } from '../lib/config/queries-normalize.js';
+import { parseGeoFlag, wrapQueryForRegion, listRegionCodes } from '../lib/report/geo-context.js';
+import { computeTopDomains } from '../lib/report/top-domains.js';
+// `report`-only and `export`-only modules are dynamically imported inside their
+// command handlers to keep cold-start fast for `--help`, `--version`, `init`
+// and `run` paths (saved ~9 eager imports / ~250–300 ms on a cold disk).
+import { deriveTrainingModel, daysSinceLastFullRun } from '../lib/providers/non-search-model.js';
 import { PROVIDER_LABELS, detectStandardKeys, heuristicKeyMatch } from '../lib/init/keys.js';
 import { detectGeography } from '../lib/init/fetch-site.js';
 import { classifyProviderError } from '../lib/providers/classify-error.js';
@@ -55,6 +66,56 @@ const c = USE_COLOR
       red: '', green: '', yellow: '',
       blue: '', cyan: '', white: '',
     };
+
+// ─── Stale artifact cleanup ─────────────────────────────────────────
+//
+// `aeo-tracker report` writes to aeo-reports/<latest-date>/. Older date
+// directories accumulate orphaned report.md / report.html from previous tool
+// versions or out-of-cycle runs — those become misleading after a layout
+// rewrite (e.g. v0.5 bento) because the old reports still render the old
+// layout, and a reader who opens the wrong file thinks the new code is broken.
+// Called from cmdReport after the latest artifacts are written.
+async function cleanupStaleReportArtifacts(latestDate) {
+  const reportsDir = 'aeo-reports';
+  if (!existsSync(reportsDir)) return { removedFiles: 0, removedDirs: 0 };
+  const { readdirSync, rmdirSync } = await import('node:fs');
+  const { unlink } = await import('node:fs/promises');
+  let removedFiles = 0;
+  let removedDirs = 0;
+  for (const entry of readdirSync(reportsDir)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(entry)) continue;  // only date-named dirs
+    if (entry === latestDate) continue;                 // never touch the latest
+    const dirPath = join(reportsDir, entry);
+    for (const fname of ['report.html', 'report.md']) {
+      const p = join(dirPath, fname);
+      if (existsSync(p)) {
+        try { await unlink(p); removedFiles++; } catch { /* skip */ }
+      }
+    }
+    // Remove the date dir if it's now empty (no custom files left).
+    try {
+      if (readdirSync(dirPath).length === 0) {
+        rmdirSync(dirPath);
+        removedDirs++;
+      }
+    } catch { /* skip */ }
+  }
+  return { removedFiles, removedDirs };
+}
+
+// ─── Atomic JSON persist for cache updates ───
+//
+// All cmdReport cache writers (citation classification, LLM actions, authority,
+// crawlability, outreach) follow the same write-tmp + rename pattern. Centralised
+// here so the random suffix is unique across pid+ms+random (avoids collisions on
+// double-press) and the helper is one line to call.
+async function persistSnapshot(latest) {
+  const summaryPath = join('aeo-responses', latest.date, '_summary.json');
+  const suffix = `${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const tmpPath = `${summaryPath}.tmp-${suffix}`;
+  await writeFile(tmpPath, JSON.stringify(latest, null, 2));
+  await rename(tmpPath, summaryPath);
+}
 
 // ─── LLM-based action recommendations ───
 
@@ -209,6 +270,35 @@ async function _tryReplay(qi, provider, srcDate) {
   const raw = JSON.parse(await readFile(replayPath, 'utf-8'));
   const { text, citations } = _extractFromRaw(provider.name, raw);
   return { text, citations, raw };
+}
+
+/**
+ * Look across `aeo-responses/<date>/_summary.json` for the most recent
+ * `lastFullRun` field and return its age in days. Returns null if no prior
+ * full run is recorded — caller treats null as "always prompt".
+ *
+ * Used by `aeo-tracker run --depth=auto` to decide when training-data
+ * baseline is due for a refresh.
+ */
+async function _readLastFullRunStaleness() {
+  const responsesDir = 'aeo-responses';
+  if (!existsSync(responsesDir)) return null;
+  const { readdirSync } = await import('node:fs');
+  const dates = readdirSync(responsesDir)
+    .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort()
+    .reverse();
+  for (const date of dates) {
+    const summaryPath = join(responsesDir, date, '_summary.json');
+    if (!existsSync(summaryPath)) continue;
+    try {
+      const summary = JSON.parse(await readFile(summaryPath, 'utf-8'));
+      if (summary.lastFullRun) {
+        return daysSinceLastFullRun(summary.lastFullRun);
+      }
+    } catch { /* corrupt — keep scanning */ }
+  }
+  return null;
 }
 
 async function _resolveReplaySource(explicitDate) {
@@ -666,18 +756,68 @@ async function cmdInit(opts = {}) {
       onAbort: () => { closeRl(); process.exit(nonInteractive ? 1 : 0); },
     });
 
-    const updated = { ...existing, queries: newQueries };
+    // v0.7 — basket versioning. Decide additive vs replace mode.
+    //   --add-queries     → preserve old queries, append new (skipping dupes)
+    //   --replace-queries → forget old queries entirely (forks history)
+    //   neither flag      → ask interactively, default to ADDITIVE (preserves trends)
+    const { readBasket, recordExpansion, recordReplacement, mergeQueries, initialBasket } =
+      await import('../lib/init/basket-history.js');
+
+    let mode = 'replace'; // default before flag/prompt logic
+    if (opts.addQueries && opts.replaceQueries) {
+      console.error(`${c.red}--add-queries and --replace-queries are mutually exclusive${c.reset}`);
+      closeRl();
+      process.exit(1);
+    } else if (opts.addQueries) {
+      mode = 'add';
+    } else if (opts.replaceQueries) {
+      mode = 'replace';
+    } else if (!nonInteractive && (existing.queries || []).length > 0) {
+      const ans = (await ask(
+        `\n${c.yellow}Existing basket detected (${(existing.queries || []).length} queries).${c.reset}\n  [a]dd new alongside existing (preserve trends)\n  [r]eplace all (fork history)\n  [c]ancel\nChoice [a/r/c, default=a]: `,
+        'a'
+      )).trim().toLowerCase();
+      if (/^c/.test(ans)) {
+        console.log('Aborted.');
+        closeRl();
+        return;
+      }
+      mode = /^r/.test(ans) ? 'replace' : 'add';
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    let finalQueries;
+    let basketUpdate;
+    if (mode === 'add') {
+      finalQueries = mergeQueries(existing.queries || [], newQueries);
+      // First time touching basket logic on a legacy config — synthesise v1
+      // entry from existing queries before recording the v2 expansion.
+      const hadHistory = Array.isArray(existing.basketHistory) && existing.basketHistory.length > 0;
+      const baseConfig = hadHistory
+        ? existing
+        : { ...existing, ...initialBasket(existing.queries || [], today) };
+      basketUpdate = recordExpansion(baseConfig, finalQueries, today);
+    } else {
+      finalQueries = newQueries;
+      basketUpdate = recordReplacement(existing, finalQueries, today);
+    }
+
+    const updated = { ...existing, queries: finalQueries, ...basketUpdate };
     if (newCandidatePool.length > 0) updated.candidatePool = newCandidatePool;
     if (validationQ?.updatedCache?.length > 0) {
       updated.validationCache = validationQ.updatedCache;
     }
     const tmpPath = CONFIG_FILE + '.tmp';
     await writeFile(tmpPath, JSON.stringify(updated, null, 2));
-    const { rename } = await import('node:fs/promises');
     await rename(tmpPath, CONFIG_FILE);
 
     console.log(`\n${c.green}✓ Queries updated in ${CONFIG_FILE}${c.reset}`);
-    newQueries.forEach((q, i) => console.log(`  Q${i + 1}: ${q}`));
+    if (mode === 'add') {
+      console.log(`  ${c.dim}Mode: additive — original Q1-Q${(existing.queries || []).length} preserved, new queries appended${c.reset}`);
+    } else {
+      console.log(`  ${c.yellow}Mode: replace — basket forked at v${basketUpdate.basketVersion} (prior versions kept in basketHistory)${c.reset}`);
+    }
+    finalQueries.forEach((q, i) => console.log(`  Q${i + 1}: ${q}`));
     console.log(`\nNext: ${c.cyan}aeo-tracker run${c.reset}\n`);
     closeRl();
     return;
@@ -1195,7 +1335,15 @@ async function cmdInit(opts = {}) {
     providers[p] = { model: MODELS[p], env: envName };
   }
 
-  const config = { brand, domain, category: categoryDescription || '', queries, regressionThreshold: 10, providers };
+  // v0.7 — initialise basket version on first save
+  const { initialBasket } = await import('../lib/init/basket-history.js');
+  const basketInit = initialBasket(queries, new Date().toISOString().slice(0, 10));
+
+  const config = {
+    brand, domain, category: categoryDescription || '',
+    queries, regressionThreshold: 10, providers,
+    ...basketInit,
+  };
   if (config_candidatePool.length > 0) {
     config.candidatePool = config_candidatePool;
   }
@@ -1207,7 +1355,6 @@ async function cmdInit(opts = {}) {
   // D2: atomic write
   const tmpPath = CONFIG_FILE + '.tmp';
   await writeFile(tmpPath, JSON.stringify(config, null, 2));
-  const { rename } = await import('node:fs/promises');
   await rename(tmpPath, CONFIG_FILE);
 
   console.log(`\n${c.green}✓ Created ${CONFIG_FILE}${c.reset}`);
@@ -1262,11 +1409,35 @@ async function cmdRun(options = {}) {
   }
 
   const config = JSON.parse(await readFile(CONFIG_FILE, 'utf-8'));
-  const { brand, domain, queries, providers: providerConfig } = config;
+  const { brand, domain, queries: rawQueries, providers: providerConfig } = config;
 
-  if (!brand || !domain || !queries?.length) {
+  if (!brand || !domain || !rawQueries?.length) {
     console.error(`${c.red}Invalid config. brand, domain, and queries are required.${c.reset}`);
     process.exit(1);
+  }
+
+  // v0.4 — normalise queries to support both string and {q, tag} forms.
+  // The `texts` array is what the rest of the run loop iterates over (no
+  // structural change downstream); `tags` are looked up by index when results
+  // are written.
+  const { texts: queries, tags: queryTags, hasTags } = normalizeQueries(rawQueries);
+  if (hasTags) {
+    console.log(`${c.dim}Funnel/intent tags: ${[...new Set(queryTags.filter(Boolean))].join(', ')}${c.reset}`);
+  }
+
+  // v0.4 — parse --geo flag here; the cost-warn line is emitted *after*
+  // provider discovery so we can include activeProviders.length in the message
+  // (referencing it before the const declaration would TDZ-crash).
+  let regionsToRun = [null];
+  let parsedGeo = null;
+  if (options.geo) {
+    parsedGeo = parseGeoFlag(options.geo);
+    if (parsedGeo.invalid && parsedGeo.invalid.length > 0) {
+      console.warn(`${c.yellow}  Unknown geo codes ignored: ${parsedGeo.invalid.join(', ')} (valid: ${listRegionCodes()})${c.reset}`);
+    }
+    if (parsedGeo.regions && parsedGeo.regions.length > 0) {
+      regionsToRun = parsedGeo.regions;
+    }
   }
 
   // Discover current search-capable models for each configured provider
@@ -1287,13 +1458,60 @@ async function cmdRun(options = {}) {
     }
     console.log(`  ${c.green}✓${c.reset} ${name}: ${models.join(', ')}`);
     for (const modelId of models) {
-      activeProviders.push({ name, model: modelId, colLabel: _modelColLabel(name, modelId), apiKey, ...PROVIDERS[name] });
+      // trainingModel = the no-search variant, used by `--depth=full`. null
+      // means the provider has no training-data mode (e.g. Perplexity).
+      const trainingModel = deriveTrainingModel(name, modelId);
+      activeProviders.push({
+        name, model: modelId, trainingModel,
+        colLabel: _modelColLabel(name, modelId),
+        apiKey, ...PROVIDERS[name],
+      });
     }
   }
 
   if (activeProviders.length === 0) {
     console.error(`${c.red}No API keys found. Set at least one: OPENAI_API_KEY, GEMINI_API_KEY, ANTHROPIC_API_KEY, or PERPLEXITY_API_KEY${c.reset}`);
     process.exit(1);
+  }
+
+  // v0.4 — geo cost warning, deferred until after provider discovery so the
+  // message can include the real provider count.
+  if (parsedGeo && parsedGeo.regions && parsedGeo.regions.length > 0) {
+    const codes = regionsToRun.map(r => r.code).join(', ');
+    const multiplier = regionsToRun.length;
+    console.log(`${c.yellow}  --geo=${codes} → ${multiplier}× cost (${multiplier} regions × ${queries.length} queries × ${activeProviders.length} providers)${c.reset}`);
+  }
+
+  // v0.3 — depth selection: web (default) | full | auto.
+  //   web   → current behaviour, single web-search pass per cell.
+  //   full  → adds a training-data pass (webSearch:false) where the provider
+  //           supports it. Cost ~doubles for the supported providers.
+  //   auto  → defaults to `web`, but prompts the user once if the last
+  //           training-data baseline is stale (>14 days) so corpus drift
+  //           gets re-measured at a sparse cadence.
+  const requestedDepth = (options.depth || 'web').toLowerCase();
+  let depth = requestedDepth === 'full' ? 'full' : 'web';
+  if (requestedDepth === 'auto') {
+    const stalenessDays = await _readLastFullRunStaleness();
+    const shouldPrompt = stalenessDays === null || stalenessDays >= 14;
+    if (shouldPrompt) {
+      const trainingProviders = activeProviders.filter(p => p.trainingModel);
+      const ageHint = stalenessDays === null
+        ? 'never run'
+        : `${stalenessDays}d ago`;
+      const ans = (await ask(
+        `${c.yellow}Last training-data baseline ${ageHint}. ` +
+        `Refresh now? +${trainingProviders.length}× provider calls per cell. [y/N] ${c.reset}`,
+        'n',
+      )).trim().toLowerCase();
+      if (ans === 'y' || ans === 'yes') depth = 'full';
+    }
+  }
+  const modesToRun = depth === 'full' ? ['web', 'training'] : ['web'];
+  if (depth === 'full') {
+    const trainingProviders = activeProviders.filter(p => p.trainingModel).map(p => p.name);
+    const skippedProviders = activeProviders.filter(p => !p.trainingModel).map(p => p.name);
+    console.log(`${c.yellow}  --depth=full → 2 passes per cell (web + training-data on ${trainingProviders.join(', ')}; ${skippedProviders.length > 0 ? `skipped: ${skippedProviders.join(', ')}` : 'all providers covered'}). Cost ~2× web-only.${c.reset}`);
   }
 
   const date = new Date().toISOString().split('T')[0];
@@ -1347,7 +1565,12 @@ async function cmdRun(options = {}) {
     try {
       existingSummary = JSON.parse(await readFile(summaryPath, 'utf-8'));
       for (const r of existingSummary.results || []) {
-        if (r.mention !== 'error') skipKeys.add(`${r.query}:${r.provider}:${r.model}`);
+        // 5-component key (query:region:provider:model:mode) — matches the
+        // lookup format below. region empty for non-geo runs; mode defaults
+        // to 'web' for legacy results that pre-date --depth=full.
+        if (r.mention !== 'error') {
+          skipKeys.add(`${r.query}:${r.region || ''}:${r.provider}:${r.model}:${r.mode || 'web'}`);
+        }
       }
     } catch { /* corrupt file — run fresh */ }
   }
@@ -1374,111 +1597,153 @@ async function cmdRun(options = {}) {
   const extractionCostTotal = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 
   for (let qi = 0; qi < queries.length; qi++) {
-    const query = queries[qi];
-    for (const provider of activeProviders) {
-      tasks.push((async () => {
-        const tag = `Q${qi + 1}/${provider.colLabel}`;
-        const skipKey = `Q${qi + 1}:${provider.name}:${provider.model}`;
-        if (skipKeys.has(skipKey)) return;
-        const t0 = Date.now();
-        try {
-          process.stdout.write(`${c.dim}  Running ${tag}...${c.reset}`);
-          // Replay mode (see replay-mode block at top of file)
-          const replayed = replaySrcDate ? await _tryReplay(qi + 1, provider, replaySrcDate) : null;
-          // End replay
-          const { text, citations, raw } = replayed
-            || await provider.call(query, provider.apiKey, provider.model);
-          const elapsedMs = Date.now() - t0;
+    const baseQuery = queries[qi];
+    for (const region of regionsToRun) {
+      const query = wrapQueryForRegion(baseQuery, region);
+      for (const provider of activeProviders) {
+        for (const mode of modesToRun) {
+          // training-data pass is skipped for providers that don't support it
+          // (e.g. Perplexity is search-only by design).
+          if (mode === 'training' && !provider.trainingModel) continue;
+          tasks.push((async () => {
+            const cellModel = mode === 'training' ? provider.trainingModel : provider.model;
+            const callOpts  = mode === 'training' ? { webSearch: false } : {};
+            const regionTag = region ? `[${region.code.toUpperCase()}]` : '';
+            const modeTag   = mode === 'training' ? '[T]' : '';
+            const tag = `Q${qi + 1}${regionTag}${modeTag}/${provider.colLabel}`;
+            const skipKey = `Q${qi + 1}:${region?.code || ''}:${provider.name}:${cellModel}:${mode}`;
+            if (skipKeys.has(skipKey)) return;
+            const t0 = Date.now();
+            try {
+              process.stdout.write(`${c.dim}  Running ${tag}...${c.reset}`);
+              // Replay mode (see replay-mode block at top of file)
+              const replayed = replaySrcDate ? await _tryReplay(qi + 1, provider, replaySrcDate) : null;
+              // End replay
+              const { text, citations, raw } = replayed
+                || await provider.call(query, provider.apiKey, cellModel, callOpts);
+              const elapsedMs = Date.now() - t0;
 
-          // Save raw response
-          const safeModel = provider.model.replace(/[^a-z0-9.-]/gi, '-');
-          const rawFile = join(responseDir, `q${qi + 1}-${provider.name}-${safeModel}.json`);
-          await writeFile(rawFile, JSON.stringify(raw, null, 2));
+              // Save raw response — region + mode suffixes in filename so
+              // multi-region / dual-pass runs don't collide.
+              const safeModel = cellModel.replace(/[^a-z0-9.-]/gi, '-');
+              const regionSuffix = region ? `-${region.code}` : '';
+              const modeSuffix = mode === 'training' ? '-training' : '';
+              const rawFile = join(responseDir, `q${qi + 1}${regionSuffix}${modeSuffix}-${provider.name}-${safeModel}.json`);
+              await writeFile(rawFile, JSON.stringify(raw, null, 2));
 
-          const mention = detectMention(text, citations, brand, domain);
-          const position = mention === 'yes' ? findPosition(text, brand, domain) : null;
-          // Two-model LLM extraction. "competitors" = both models agreed (strong signal).
-          // "competitorsUnverified" = only one model agreed (weaker — rendered with dashed badge).
-          const extraction = await extractWithTwoModels({
-            text, brand, domain,
-            category: config.category || '',
-            primary: extractionProviders.primary,
-            secondary: extractionProviders.secondary,
-          });
-          const competitors = extraction.verified;
-          const competitorsUnverified = extraction.unverified;
-          const canonicalCitations = [...new Set(citations)];
-          // Categorise the response so the UI can distinguish "engine refused / returned nothing"
-          // from "engine wrote prose but no extractable list". The extraction union (verified +
-          // unverified) is the full set of names either model saw — best signal for quality.
-          const responseQuality = classifyResponseQuality({
-            text, citations,
-            competitors: [...competitors, ...competitorsUnverified],
-          });
+              const mention = detectMention(text, citations, brand, domain);
+              const position = mention === 'yes' ? findPosition(text, brand, domain) : null;
+              const adSignal = detectAdsInResponse(text, citations);
 
-          const usage = extractUsage(provider.name, raw);
-          let costInfo = calcCost(provider.model, usage) || { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costUsd: 0 };
-          // Replay mode (see replay-mode block at top of file)
-          if (replayed) costInfo = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
-          // End replay
+              // Two-model LLM extraction + sentiment cross-check run in parallel
+              // — both hit classify-tier endpoints, no shared state. Sentiment is
+              // skipped (resolves to null) when the brand wasn't mentioned, saving
+              // ~$0.0008 per non-mention cell.
+              //   extraction.verified  = both models agreed (strong signal)
+              //   extraction.unverified = only one model agreed (weaker — dashed badge)
+              const sentimentTask = (mention === 'yes' || mention === 'src')
+                ? classifySentimentWithTwoModels({
+                    text, brand, domain,
+                    primary: extractionProviders.primary,
+                    secondary: extractionProviders.secondary,
+                  })
+                : Promise.resolve(null);
+              const [extraction, sentiment] = await Promise.all([
+                extractWithTwoModels({
+                  text, brand, domain,
+                  category: config.category || '',
+                  primary: extractionProviders.primary,
+                  secondary: extractionProviders.secondary,
+                }),
+                sentimentTask,
+              ]);
+              const competitors = extraction.verified;
+              const competitorsUnverified = extraction.unverified;
+              const canonicalCitations = [...new Set(citations)];
+              // Categorise the response so the UI can distinguish "engine refused / returned nothing"
+              // from "engine wrote prose but no extractable list". The extraction union (verified +
+              // unverified) is the full set of names either model saw — best signal for quality.
+              const responseQuality = classifyResponseQuality({
+                text, citations,
+                competitors: [...competitors, ...competitorsUnverified],
+              });
 
-          // Extraction cost for this cell — tracked separately so we can report it
-          // aggregated at the bottom instead of per-cell.
-          extractionCostTotal.inputTokens  += extraction.costInfo.inputTokens  || 0;
-          extractionCostTotal.outputTokens += extraction.costInfo.outputTokens || 0;
-          extractionCostTotal.costUsd      += extraction.costInfo.costUsd      || 0;
+              const usage = extractUsage(provider.name, raw);
+              let costInfo = calcCost(cellModel, usage) || { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, costUsd: 0 };
+              // Replay mode (see replay-mode block at top of file)
+              if (replayed) costInfo = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+              // End replay
 
-          // Store per-model extractionSources ONLY when the two models disagreed
-          // (something landed in the unverified tier). On unanimous agreement both
-          // source-lists equal `competitors`, so storing them is redundant and bloats
-          // the summary JSON ~3× across a year of weekly snapshots.
-          const storeSources = competitorsUnverified.length > 0
-            || !!extraction.sources.primary?.error
-            || !!extraction.sources.secondary?.error;
-          results.push({
-            query: `Q${qi + 1}`,
-            queryText: query,
-            provider: provider.name,
-            label: provider.label,
-            model: provider.model,
-            mention,
-            position,
-            citationCount: citations.length,
-            canonicalCitations,
-            competitors,
-            competitorsUnverified,
-            ...(storeSources ? { extractionSources: extraction.sources } : {}),
-            responseQuality,
-            hasBrandInCitations: citations.some(u =>
-              u.toLowerCase().includes(domain.toLowerCase())
-            ),
-            responseExcerpt: String(text || '').slice(0, 1500),
-            elapsedMs,
-            inputTokens: costInfo.inputTokens,
-            outputTokens: costInfo.outputTokens,
-            costUsd: costInfo.costUsd,
-          });
-          const icon = mention === 'yes' ? `${c.green}YES` : mention === 'src' ? `${c.yellow}SRC` : `${c.red}NO`;
-          const costStr = costInfo.costUsd > 0 ? ` $${costInfo.costUsd.toFixed(4)}` : '';
-          // Replay mode (see replay-mode block at top of file)
-          const replayTag = replayed ? ` ${c.yellow}[replay]${c.reset}` : '';
-          // End replay
-          process.stdout.write(`\r  ${icon}${c.reset} ${tag}${replayTag} (${citations.length} citations, ${elapsedMs}ms${costStr})\n`);
-        } catch (err) {
-          const elapsedMs = Date.now() - t0;
-          process.stdout.write(`\r  ${c.red}ERR${c.reset} ${tag}: ${errMsg(err)}\n`);
-          results.push({
-            query: `Q${qi + 1}`, queryText: query,
-            provider: provider.name, label: provider.label,
-            model: provider.model, mention: 'error',
-            position: null, citationCount: 0,
-            canonicalCitations: [],
-            competitors: [],
-            elapsedMs,
-            error: errMsg(err),
-          });
+              // Extraction cost for this cell — tracked separately so we can report it
+              // aggregated at the bottom instead of per-cell.
+              extractionCostTotal.inputTokens  += extraction.costInfo.inputTokens  || 0;
+              extractionCostTotal.outputTokens += extraction.costInfo.outputTokens || 0;
+              extractionCostTotal.costUsd      += extraction.costInfo.costUsd      || 0;
+              if (sentiment && sentiment.costInfo) {
+                extractionCostTotal.inputTokens  += sentiment.costInfo.inputTokens  || 0;
+                extractionCostTotal.outputTokens += sentiment.costInfo.outputTokens || 0;
+                extractionCostTotal.costUsd      += sentiment.costInfo.costUsd      || 0;
+              }
+
+              // Store per-model extractionSources ONLY when the two models disagreed
+              // (something landed in the unverified tier). On unanimous agreement both
+              // source-lists equal `competitors`, so storing them is redundant and bloats
+              // the summary JSON ~3× across a year of weekly snapshots.
+              const storeSources = competitorsUnverified.length > 0
+                || !!extraction.sources.primary?.error
+                || !!extraction.sources.secondary?.error;
+              results.push({
+                query: `Q${qi + 1}`,
+                queryText: baseQuery,
+                provider: provider.name,
+                label: provider.label,
+                model: cellModel,
+                mode,                              // 'web' | 'training'
+                mention,
+                position,
+                citationCount: citations.length,
+                canonicalCitations,
+                competitors,
+                competitorsUnverified,
+                ...(storeSources ? { extractionSources: extraction.sources } : {}),
+                ...(sentiment ? { sentiment: { label: sentiment.label, confidence: sentiment.confidence, rationale: sentiment.rationale } } : {}),
+                ...(queryTags[qi] ? { tag: queryTags[qi] } : {}),
+                ...(region ? { region: region.code, regionLabel: region.label } : {}),
+                ...(adSignal.hasAdSignal ? { adMarkers: adSignal.adMarkers, adNetworkCitations: adSignal.adNetworkCitations } : {}),
+                responseQuality,
+                hasBrandInCitations: citations.some(u =>
+                  u.toLowerCase().includes(domain.toLowerCase())
+                ),
+                responseExcerpt: String(text || '').slice(0, 1500),
+                elapsedMs,
+                inputTokens: costInfo.inputTokens,
+                outputTokens: costInfo.outputTokens,
+                costUsd: costInfo.costUsd,
+              });
+              const icon = mention === 'yes' ? `${c.green}YES` : mention === 'src' ? `${c.yellow}SRC` : `${c.red}NO`;
+              const costStr = costInfo.costUsd > 0 ? ` $${costInfo.costUsd.toFixed(4)}` : '';
+              // Replay mode (see replay-mode block at top of file)
+              const replayTag = replayed ? ` ${c.yellow}[replay]${c.reset}` : '';
+              // End replay
+              process.stdout.write(`\r  ${icon}${c.reset} ${tag}${replayTag} (${citations.length} citations, ${elapsedMs}ms${costStr})\n`);
+            } catch (err) {
+              const elapsedMs = Date.now() - t0;
+              process.stdout.write(`\r  ${c.red}ERR${c.reset} ${tag}: ${errMsg(err)}\n`);
+              results.push({
+                query: `Q${qi + 1}`, queryText: baseQuery,
+                provider: provider.name, label: provider.label,
+                model: cellModel, mode, mention: 'error',
+                position: null, citationCount: 0,
+                canonicalCitations: [],
+                competitors: [],
+                ...(region ? { region: region.code, regionLabel: region.label } : {}),
+                elapsedMs,
+                error: errMsg(err),
+              });
+            }
+          })());
         }
-      })());
+      }
     }
   }
 
@@ -1585,6 +1850,11 @@ async function cmdRun(options = {}) {
     .slice(0, 20)
     .map(([url, count]) => ({ url, count }));
 
+  // Domain-level share-of-voice aggregation. Groups all URLs by hostname so
+  // the report can show "G2 captures 19% of citations" (OneGlanse-style table)
+  // — domain share is what matters for outreach planning, not individual URLs.
+  const topDomains = computeTopDomains(results, 10);
+
   if (topCanonicalSources.length > 0) {
     console.log(`\n${c.bold}  Top canonical sources (pages AI cites for your vertical):${c.reset}`);
     for (const { url, count } of topCanonicalSources.slice(0, 5)) {
@@ -1641,6 +1911,11 @@ async function cmdRun(options = {}) {
     // Aggregated here for audit logs / dashboards — per-cell info is in results[].competitorsUnverified.
     unverifiedOnly: unverifiedOnlyEntries,
     topCanonicalSources,
+    topDomains,
+    adsDetected: summariseAdsAcrossResults(results),
+    // Track when we last ran a training-data baseline so `--depth=auto`
+    // can prompt the user when the corpus signal is stale (>14 days).
+    ...(depth === 'full' ? { lastFullRun: date } : {}),
   };
   await writeFile(join(responseDir, '_summary.json'), JSON.stringify(summary, null, 2));
 
@@ -1743,6 +2018,8 @@ function buildHtmlSummary(snapshots, rawResponses) {
     const hits = rows.filter(r => r.mention === 'yes' || r.mention === 'src').length;
     const total = rows.length;
     const pct = total ? Math.round((hits / total) * 100) : 0;
+    // v0.5 — total citation count per engine, used by hero KPI and engine cards
+    const citations = rows.reduce((s, r) => s + (r.citationCount || 0), 0);
     const cells = queryOrder.map(q => {
       const c = rows.find(r => r.query === q.id);
       if (!c) return 'missing';
@@ -1763,7 +2040,7 @@ function buildHtmlSummary(snapshots, rawResponses) {
     return {
       provider: en.provider, model: en.model,
       label: en.label, kind: en.model,
-      cells, pct, hits, total, delta, series,
+      cells, pct, hits, total, citations, delta, series,
     };
   });
 
@@ -1808,9 +2085,14 @@ function buildHtmlSummary(snapshots, rawResponses) {
         label: en.label,
         mention: r?.mention ?? 'missing',
         position: r?.position ?? null,
+        sentiment: r?.sentiment ?? null,
         competitors: [...verifiedCells, ...unverifiedCells].slice(0, 4),
         responseExcerpt: r?.responseExcerpt ?? null,
         responseQuality: r?.responseQuality ?? null,
+        // Surface the underlying provider error message for cells that errored.
+        // Used by the matrix view to attach a tooltip instead of blending the
+        // err state into the empty-cell visual.
+        errorMessage: r?.error ?? null,
       };
     });
     return { query: q.text, columns };
@@ -1822,6 +2104,17 @@ function buildHtmlSummary(snapshots, rawResponses) {
   const costTrend = snapshots.map(s => Math.round((s.sessionCostUsd || 0) * 10000) / 10000);
   const totalCostUsd = Math.round(costTrend.reduce((s, v) => s + v, 0) * 1_000_000) / 1_000_000;
 
+  // v0.5 — total citation count this run + delta vs prev run (used by hero KPI)
+  const totalCitations = latest.results.reduce((s, r) => s + (r.citationCount || 0), 0);
+  const totalCitationsPrev = prev ? prev.results.reduce((s, r) => s + (r.citationCount || 0), 0) : null;
+
+  // v0.5 — region count for the diagnostics tile.
+  // Multi-region runs (--geo) tag each result with `region`; single-region default → 1.
+  const regions = [...new Set(latest.results.map(r => r.region).filter(Boolean))];
+  const regionCount = regions.length || 1;
+
+  // v0.5 — pass-through of latest-snapshot enrichment fields (computed during run / report).
+  // Pre-derived in /run + /report so the renderer doesn't need to re-compute or re-fetch.
   return {
     meta: {
       brand, domain,
@@ -1835,11 +2128,17 @@ function buildHtmlSummary(snapshots, rawResponses) {
     scorePrev: prev?.score ?? null,
     coverage,
     trend: snapshots.map(s => s.score),
+    trendDates: snapshots.map(s => s.date),
     queries: queryOrder.map(q => q.text),
+    queryTexts: queryOrder.map(q => q.text), // alias for renderers that prefer the longer name
     engines,
     competitors,
     sources,
     positionMatrix,
+    totalCitations,
+    totalCitationsPrev,
+    regionCount,
+    regions,
     sessionCostUsd,
     totalCostUsd,
     costBreakdown,
@@ -1847,12 +2146,57 @@ function buildHtmlSummary(snapshots, rawResponses) {
     quotes: [],
     citationOnly: [],
     actions,
+    // Pass-through fields (already cached in _summary.json by /run + /report).
+    // Backwards-compat: snapshots from v0.2.x and earlier didn't pre-compute
+    // topDomains during run. Derive from canonicalCitations on the fly so
+    // Section 04 (Domain share-of-voice) renders for legacy data.
+    topDomains:        (latest.topDomains && latest.topDomains.length > 0)
+      ? latest.topDomains
+      : computeTopDomains(latest.results || [], 10),
+    topCanonicalSources: latest.topCanonicalSources || [],
+    crawlability:      latest.crawlability || null,
+    authorityPresence: latest.authorityPresence || null,
+    adsDetected:       latest.adsDetected || null,
+    outreachTemplates: latest.outreachTemplates || [],
+    citationClassification: latest.citationClassification || null,
+    // Raw cell data, used for per-cell sentiment overlay in the matrix sub-toggle.
+    cells: latest.results.map(r => ({
+      query: r.query,
+      provider: r.provider,
+      mention: r.mention,
+      position: r.position,
+      sentiment: r.sentiment || null,
+      citationCount: r.citationCount || 0,
+      region: r.region || null,
+    })),
   };
 }
 
 // ─── Commands (report) ───
 
 async function cmdReport(args = {}) {
+  // Lazy-load report-only modules so `--help` / `--version` / `init` / `run`
+  // don't pay their import cost. See top-of-file comment about cold-start.
+  const [
+    { generateOutreachTemplates },
+    { auditCrawlability },
+    { checkAuthorityPresence },
+    { checkPageSignals },
+    { checkEntityGraph },
+    { classifyCompetitorPricing },
+    { checkRegionContext },
+    { checkResponseFreshness },
+  ] = await Promise.all([
+    import('../lib/report/outreach-templates.js'),
+    import('../lib/report/crawlability-audit.js'),
+    import('../lib/report/authority-presence.js'),
+    import('../lib/report/page-signals.js'),
+    import('../lib/report/entity-graph.js'),
+    import('../lib/report/competitor-pricing.js'),
+    import('../lib/report/region-context.js'),
+    import('../lib/report/response-freshness.js'),
+  ]);
+
   const { readdirSync } = await import('node:fs');
   const responsesDir = 'aeo-responses';
 
@@ -1937,12 +2281,7 @@ async function cmdReport(args = {}) {
               model: providerCfg.model,
             });
             latest.citationClassification = classification;
-            // Atomic write — avoids partial writes and race conditions
-            const summaryPath = join('aeo-responses', latest.date, '_summary.json');
-            const tmpPath = summaryPath + '.tmp-' + Date.now();
-            await writeFile(tmpPath, JSON.stringify(latest, null, 2));
-            const { rename } = await import('node:fs/promises');
-            await rename(tmpPath, summaryPath);
+            await persistSnapshot(latest);
             const off = classification.offCategoryDomains.length;
             if (off > 0) {
               console.log(`  ${c.yellow}⚠ ${off} cited domain${off !== 1 ? 's' : ''} classified as off-category${c.reset}`);
@@ -1986,11 +2325,7 @@ async function cmdReport(args = {}) {
           latest.sessionCostUsd = Math.round(
             (latest.costByModel.reduce((s, v) => s + (v.costUsd || 0), 0)) * 1_000_000
           ) / 1_000_000;
-          const summaryPath = join('aeo-responses', latest.date, '_summary.json');
-          const tmpPath = summaryPath + '.tmp-' + Date.now();
-          await writeFile(tmpPath, JSON.stringify(latest, null, 2));
-          const { rename } = await import('node:fs/promises');
-          await rename(tmpPath, summaryPath);
+          await persistSnapshot(latest);
           console.log(`  ${c.green}✓ ${actions.length} recommendations generated${c.reset}`);
         } catch (err) {
           console.log(`  ${c.yellow}⚠ Recommendations skipped: ${errMsg(err)}${c.reset}`);
@@ -2001,21 +2336,233 @@ async function cmdReport(args = {}) {
     console.log(`  ${c.dim}Recommendations loaded from cache${c.reset}`);
   }
 
-  const md = renderMarkdown(snapshots, rawResponses);
+  // ─── Authority presence (Wikipedia + Reddit, cached) ───
+  // Off-page signals AI engines weight heavily. Both APIs are free public
+  // endpoints with no auth — we run once per report and cache.
+  if (!latest.authorityPresence && latest.brand && !args.noAuthority) {
+    console.log(`  ${c.dim}Checking Wikipedia + Reddit for ${latest.brand}...${c.reset}`);
+    try {
+      latest.authorityPresence = await checkAuthorityPresence(latest.brand);
+      await persistSnapshot(latest);
+      const ap = latest.authorityPresence;
+      const wiki = ap.wikipedia.found ? `${c.green}wiki✓${c.reset}` : `${c.yellow}wiki✗${c.reset}`;
+      const red = ap.reddit.found ? `${c.green}reddit✓${c.reset} (${ap.reddit.mentionCount})` : `${c.yellow}reddit✗${c.reset}`;
+      console.log(`  ${wiki} · ${red}`);
+    } catch (err) {
+      console.log(`  ${c.yellow}⚠ Authority check skipped: ${errMsg(err)}${c.reset}`);
+    }
+  } else if (latest.authorityPresence) {
+    console.log(`  ${c.dim}Authority presence loaded from cache${c.reset}`);
+  } else if (args.noAuthority) {
+    console.log(`  ${c.dim}Authority check skipped (--no-authority)${c.reset}`);
+  }
+
+  // ─── AI-bot crawlability audit (cached) ───
+  // Pure HTTP fetches, no LLM cost. Surfaces robots.txt blocks and missing
+  // /llms.txt / sitemap.xml — common root causes of "AI doesn't see me".
+  if (!latest.crawlability && latest.domain) {
+    console.log(`  ${c.dim}Auditing AI-bot crawlability for ${latest.domain}...${c.reset}`);
+    try {
+      latest.crawlability = await auditCrawlability(latest.domain);
+      await persistSnapshot(latest);
+      const s = latest.crawlability.summary;
+      const flag = s.blockedCount > 0 ? `${c.red}${s.blockedCount} bot${s.blockedCount !== 1 ? 's' : ''} blocked${c.reset}` : `${c.green}all bots OK${c.reset}`;
+      console.log(`  ${c.green}✓${c.reset} robots:${s.hasRobots ? '✓' : '✗'} llms.txt:${s.hasLlmsTxt ? '✓' : '✗'} sitemap:${s.hasSitemap ? '✓' : '✗'} — ${flag}`);
+    } catch (err) {
+      console.log(`  ${c.yellow}⚠ Crawlability audit skipped: ${errMsg(err)}${c.reset}`);
+    }
+  } else if (latest.crawlability) {
+    console.log(`  ${c.dim}Crawlability audit loaded from cache${c.reset}`);
+  }
+
+  // ─── v1.1: Page signals (own-domain HTML crawl, cached) ───
+  // Surfaces H1/H2 patterns, answer-capsule coverage, Schema.org block
+  // count + types, FAQ count. Pure HTTP fetch, no LLM cost.
+  if (!latest.pageSignals && latest.domain && !args.noPageSignals) {
+    console.log(`  ${c.dim}Crawling own-domain page signals (${latest.domain})...${c.reset}`);
+    try {
+      latest.pageSignals = await checkPageSignals(latest.domain);
+      await persistSnapshot(latest);
+      const ps = latest.pageSignals.homepage;
+      if (ps?.ok) {
+        console.log(`  ${c.green}✓${c.reset} h1:${ps.headings.h1.count} h2:${ps.headings.h2.count} capsules:${ps.answerCapsules.coverage}% schemas:${ps.schemaOrg.blockCount}`);
+      } else {
+        console.log(`  ${c.yellow}⚠ Page signals: ${ps?.error || 'unavailable'}${c.reset}`);
+      }
+    } catch (err) {
+      console.log(`  ${c.yellow}⚠ Page signals skipped: ${errMsg(err)}${c.reset}`);
+    }
+  } else if (latest.pageSignals) {
+    console.log(`  ${c.dim}Page signals loaded from cache${c.reset}`);
+  } else if (args.noPageSignals) {
+    console.log(`  ${c.dim}Page signals skipped (--no-page-signals)${c.reset}`);
+  }
+
+  // ─── v1.1: Entity graph (cross-platform sameAs reciprocity, cached) ───
+  // Reuses homepage HTML from pageSignals if available — avoids re-fetch.
+  if (!latest.entityGraph && latest.domain && !args.noEntityGraph) {
+    console.log(`  ${c.dim}Verifying cross-platform sameAs chain...${c.reset}`);
+    try {
+      latest.entityGraph = await checkEntityGraph(latest.domain);
+      await persistSnapshot(latest);
+      const eg = latest.entityGraph;
+      if (eg.ok) {
+        console.log(`  ${c.green}✓${c.reset} sameAs:${eg.sameAsCount} reciprocity:${eg.summary.reciprocityRate}%`);
+      } else {
+        console.log(`  ${c.yellow}⚠ Entity graph: ${eg.error || 'unavailable'}${c.reset}`);
+      }
+    } catch (err) {
+      console.log(`  ${c.yellow}⚠ Entity graph skipped: ${errMsg(err)}${c.reset}`);
+    }
+  } else if (latest.entityGraph) {
+    console.log(`  ${c.dim}Entity graph loaded from cache${c.reset}`);
+  } else if (args.noEntityGraph) {
+    console.log(`  ${c.dim}Entity graph skipped (--no-entity-graph)${c.reset}`);
+  }
+
+  // ─── v1.1: Competitor pricing tiers (cached, top-5) ───
+  // Heuristic only — no LLM cost. Uses citations from this run.
+  if (!latest.competitorPricing && Array.isArray(latest.topCompetitors) && latest.topCompetitors.length > 0 && !args.noPricing) {
+    console.log(`  ${c.dim}Classifying competitor pricing tiers (top-5)...${c.reset}`);
+    try {
+      const allCitations = (latest.results || []).flatMap(r => r.canonicalCitations || []);
+      latest.competitorPricing = await classifyCompetitorPricing(latest.topCompetitors, allCitations, { limit: 5 });
+      await persistSnapshot(latest);
+      const tiers = latest.competitorPricing.map(c => `${c.name}=${c.tier}`).join(' ');
+      console.log(`  ${c.green}✓${c.reset} ${tiers}`);
+    } catch (err) {
+      console.log(`  ${c.yellow}⚠ Competitor pricing skipped: ${errMsg(err)}${c.reset}`);
+    }
+  } else if (latest.competitorPricing) {
+    console.log(`  ${c.dim}Competitor pricing loaded from cache${c.reset}`);
+  } else if (args.noPricing) {
+    console.log(`  ${c.dim}Competitor pricing skipped (--no-pricing)${c.reset}`);
+  }
+
+  // ─── v1.1: Region context (per-engine geo signals, derived) ───
+  // Pure derivation from existing results — no fetch. Always recompute.
+  try {
+    latest.regionContext = checkRegionContext(latest);
+    await persistSnapshot(latest);
+    const rc = latest.regionContext.aggregate;
+    if (rc.dominantRegion) {
+      console.log(`  ${c.green}✓${c.reset} dominant region: ${rc.dominantRegion} (${rc.confidence})`);
+    }
+  } catch (err) {
+    console.log(`  ${c.yellow}⚠ Region context skipped: ${errMsg(err)}${c.reset}`);
+  }
+
+  // ─── v1.1: Response freshness (training cutoff inference, derived) ───
+  // Pure derivation from existing results. Always recompute.
+  try {
+    latest.responseFreshness = checkResponseFreshness(latest);
+    await persistSnapshot(latest);
+    const rf = latest.responseFreshness.aggregate;
+    console.log(`  ${c.green}✓${c.reset} freshness: ${rf.overall} (fresh:${rf.counts.fresh} stale:${rf.counts.stale} unknown:${rf.counts.unknown})`);
+  } catch (err) {
+    console.log(`  ${c.yellow}⚠ Response freshness skipped: ${errMsg(err)}${c.reset}`);
+  }
+
+  // ─── Outreach email templates for top-3 cited domains (cached) ───
+  if (!latest.outreachTemplates && Array.isArray(latest.topDomains) && latest.topDomains.length > 0) {
+    let cfg = {};
+    try { cfg = JSON.parse(await readFile(CONFIG_FILE, 'utf-8')); } catch { /* skip */ }
+    const category = cfg.category || '';
+    const providersCfg = { ...DEFAULT_CONFIG.providers, ...(cfg.providers || {}) };
+    const providerEntry = Object.entries(providersCfg).find(([, p]) => process.env[p.env]);
+    if (providerEntry && category) {
+      const [providerKey, providerCfg] = providerEntry;
+      const providerCall = PROVIDERS[providerKey]?.call;
+      if (providerCall) {
+        console.log(`  ${c.dim}Drafting outreach emails for top-${Math.min(3, latest.topDomains.length)} domains...${c.reset}`);
+        try {
+          const { templates, costInfo } = await generateOutreachTemplates({
+            brand: latest.brand, domain: latest.domain, category,
+            topDomains: latest.topDomains,
+            providerName: providerKey,
+            providerCall,
+            apiKey: process.env[providerCfg.env],
+            model: CLASSIFY_MODELS[providerKey] || providerCfg.model,
+          });
+          if (templates.length > 0) {
+            latest.outreachTemplates = templates;
+            if (!latest.costByModel) latest.costByModel = [];
+            if (costInfo) latest.costByModel.push(costInfo);
+            await persistSnapshot(latest);
+            console.log(`  ${c.green}✓ ${templates.length} outreach template${templates.length !== 1 ? 's' : ''} generated${c.reset}`);
+          }
+        } catch (err) {
+          console.log(`  ${c.yellow}⚠ Outreach templates skipped: ${errMsg(err)}${c.reset}`);
+        }
+      }
+    }
+  } else if (latest.outreachTemplates) {
+    console.log(`  ${c.dim}Outreach templates loaded from cache${c.reset}`);
+  }
+
+  // v0.7 — AEO Mission Control metadata payload (privacy-stripped allow-list).
+  // Skipped entirely when --no-mc-block is passed.
+  // Read package version once — used by both the MC bridge metadata and the
+  // footer colophon. Hoisted out of the noMcBlock branch so the footer line
+  // always shows it (e.g. `· v0.3.0 · run_260423`).
+  let trackerVersion = '0.0.0';
+  try {
+    const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf-8'));
+    trackerVersion = pkg.version || trackerVersion;
+  } catch { /* version unknown — falls through to '0.0.0' */ }
+
+  let mcMetadata = null;
+  let daysSinceRun = 0;
+  if (!args.noMcBlock) {
+    let cfgLang = 'en';
+    let cfgRaw = null;
+    try {
+      cfgRaw = JSON.parse(await readFile(CONFIG_FILE, 'utf-8'));
+      cfgLang = cfgRaw.lang || cfgRaw.language || 'en';
+    } catch { /* config missing — default 'en', no basket history available */ }
+    mcMetadata = buildMcMetadata(latest, snapshots, {
+      trackerVersion,
+      lang: cfgLang,
+      config: cfgRaw,
+    });
+
+    // Compute age in days (ceiling). latest.date is "YYYY-MM-DD" UTC.
+    const runDateMs = Date.parse(latest.date + 'T00:00:00Z');
+    if (Number.isFinite(runDateMs)) {
+      daysSinceRun = Math.max(0, Math.floor((Date.now() - runDateMs) / 86400000));
+    }
+  }
+
+  const md = renderMarkdown(snapshots, rawResponses, { mcMetadata, noMcBlock: args.noMcBlock });
 
   const outDir = join('aeo-reports', latest.date);
   await mkdir(outDir, { recursive: true });
   const outPath = args.output || join(outDir, 'report.md');
   await writeFile(outPath, md);
 
-  // v0.6 — HTML sibling output (zero runtime JS, Google Fonts via CDN)
+  // v0.8 — HTML bento report is the default; --no-html skips it for CI/email-only.
+  // The legacy `cmdPreview` markdown→TMP-HTML path was removed in v0.8 — the
+  // single-file bento HTML in `lib/report/html.js` is the canonical view.
   let htmlOutPath = null;
-  if (args.html) {
+  if (!args.noHtml) {
     htmlOutPath = args.output
       ? args.output.replace(/\.md$/, '') + '.html'
       : join(outDir, 'report.html');
-    const html = renderHtml(buildHtmlSummary(snapshots, rawResponses));
+    const html = renderHtml(
+      buildHtmlSummary(snapshots, rawResponses),
+      snapshots,
+      { mcMetadata, daysSinceRun, noMcBlock: args.noMcBlock, pkgVersion: trackerVersion },
+    );
     await writeFile(htmlOutPath, html);
+  }
+
+  // v0.5 — sweep stale orphaned report.{md,html} from older date dirs so they
+  // don't mislead a reader after a layout rewrite. Only fires when writing to
+  // the default location (custom --output paths skip cleanup since the user
+  // controls where artifacts land).
+  let cleanupResult = { removedFiles: 0, removedDirs: 0 };
+  if (!args.output) {
+    cleanupResult = await cleanupStaleReportArtifacts(latest.date);
   }
 
   const loadedQuotes = Object.keys(rawResponses).length;
@@ -2023,6 +2570,13 @@ async function cmdReport(args = {}) {
   console.log(`  ${snapshots.length} run${snapshots.length !== 1 ? 's' : ''} loaded (${snapshots[0].date} → ${latest.date})`);
   console.log(`  ${loadedQuotes} raw response${loadedQuotes !== 1 ? 's' : ''} available for verbatim quotes`);
   console.log(`  Latest score: ${c.bold}${latest.score}%${c.reset}`);
+  if (cleanupResult.removedFiles > 0 || cleanupResult.removedDirs > 0) {
+    const f = cleanupResult.removedFiles;
+    const d = cleanupResult.removedDirs;
+    const fStr = `${f} stale report file${f !== 1 ? 's' : ''}`;
+    const dStr = d > 0 ? ` and ${d} empty director${d !== 1 ? 'ies' : 'y'}` : '';
+    console.log(`  ${c.dim}Cleanup: removed ${fStr}${dStr}.${c.reset}`);
+  }
   console.log(`\n${c.green}Report written: ${outPath}${c.reset}`);
   if (htmlOutPath) console.log(`${c.green}HTML report:   ${htmlOutPath}${c.reset}`);
 
@@ -2034,512 +2588,13 @@ async function cmdReport(args = {}) {
     execSync(`${opener} "${htmlOutPath}"`);
     console.log(`${c.green}Opened in browser: ${htmlOutPath}${c.reset}\n`);
   } else {
-    await cmdPreview({ input: outPath });
+    console.log(`${c.dim}(--no-html: only ${outPath} written; drop --no-html to open the bento HTML)${c.reset}\n`);
   }
 
   process.exit(0);
 }
 
-// ─── Commands (preview) ───
-
-async function cmdPreview(args = {}) {
-  const responsesDir = 'aeo-responses';
-  if (!existsSync(responsesDir)) {
-    console.error(`${c.red}No aeo-responses/ found. Run: aeo-tracker run && aeo-tracker report${c.reset}`);
-    process.exit(1);
-  }
-
-  const { readdirSync } = await import('node:fs');
-  const dates = readdirSync(responsesDir).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-  const latest = dates[dates.length - 1];
-  if (!latest) {
-    console.error(`${c.red}No runs found.${c.reset}`);
-    process.exit(1);
-  }
-
-  // Find or generate report.md
-  const reportPath = args.input || join('aeo-reports', latest, 'report.md');
-  if (!existsSync(reportPath)) {
-    console.log(`${c.yellow}No report.md found — generating...${c.reset}`);
-    await cmdReport({});
-  }
-
-  const markdownContent = await readFile(reportPath, 'utf-8');
-
-  // Embed markdown as JSON string — handles all escaping automatically
-  const mdJson = JSON.stringify(markdownContent);
-
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>AEO Report — ${latest}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Fraunces:opsz,wght@9..144,700;9..144,900&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"><\/script>
-<style>
-/* AEO Report — Status Board (Variant B)
-   4 zones: STATUS | ENGINES + ACTIONS | DETAILS
-   Each zone answers one question. Scan in <10s. */
-:root{
-  --bg:#e8e8e2; --white:#fff; --c2:#f4f4f0; --c3:#ebebea;
-  --ink:#111110; --t2:#5f5f58; --t3:#9f9f96;
-  --line:#ddddd4; --lines:#c4c4bc;
-  --amber:#d97706; --amberBg:#fffbeb; --amberLine:#fde68a;
-}
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html{background:var(--bg)}
-body{
-  font-family:"DM Sans",system-ui,-apple-system,sans-serif;
-  font-size:15px;line-height:1.65;color:var(--ink);
-  background:var(--bg);min-height:100vh;padding:0 16px 80px;
-  -webkit-font-smoothing:antialiased;animation:fi .3s ease both;
-}
-@keyframes fi{from{opacity:0}to{opacity:1}}
-#root{
-  max-width:960px;margin:0 auto;background:var(--white);
-  box-shadow:0 0 0 1px rgba(0,0,0,.07),0 8px 32px rgba(0,0,0,.1);
-  border-radius:8px;overflow:hidden;
-}
-
-/* Zone 1 — Status banner */
-.z-status{display:flex;align-items:center;gap:40px;padding:32px 48px;color:#fff;flex-wrap:wrap}
-.z-status__score{
-  font-family:"Fraunces",Georgia,serif;font-weight:900;
-  font-size:clamp(5rem,13vw,8.5rem);line-height:.9;letter-spacing:-.05em;
-  color:rgba(255,255,255,.95);flex-shrink:0;
-  animation:sup .55s cubic-bezier(.2,.8,.2,1) both;
-}
-@keyframes sup{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
-.z-status{animation:zoneIn .42s ease both}
-.z-row{animation:zoneIn .42s ease .07s both}
-.report-body{animation:zoneIn .42s ease .14s both}
-@keyframes zoneIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-.z-status__meta{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}
-.z-status__label{
-  font-family:"JetBrains Mono",monospace;font-size:.95rem;font-weight:700;
-  letter-spacing:.2em;text-transform:uppercase;color:#fff;margin-bottom:4px;
-}
-.z-status__brand{font-size:.92rem;color:rgba(255,255,255,.92);font-weight:600}
-.z-status__dates{font-family:"JetBrains Mono",monospace;font-size:.66rem;color:rgba(255,255,255,.5);letter-spacing:.02em}
-.z-status__trend-badge{
-  display:inline-flex;align-items:center;gap:5px;margin-top:8px;
-  background:rgba(0,0,0,.2);border-radius:3px;padding:4px 9px;
-  font-family:"JetBrains Mono",monospace;font-size:.68rem;font-weight:600;
-  color:rgba(255,255,255,.9);letter-spacing:.02em;width:fit-content;
-}
-.z-status__pct{font-size:.45em;vertical-align:.12em;font-weight:700;opacity:.75;letter-spacing:0}
-
-/* Engine pills bar */
-.z-engines-bar{
-  display:grid;grid-template-columns:20% 80%;align-items:start;
-  background:var(--white);
-  border-top:1px solid var(--line);border-bottom:1px solid var(--line);
-}
-.z-engines-bar__left{
-  padding:16px 24px 16px 48px;border-right:1px solid var(--line);
-  display:flex;flex-direction:column;gap:8px;
-}
-.z-engines-bar__right{
-  padding:16px 28px 16px 28px;
-  display:flex;flex-direction:column;gap:8px;
-}
-.z-engines-bar__lbl,.z-queries-lbl{
-  font-family:"JetBrains Mono",monospace;font-size:1rem;font-weight:700;
-  letter-spacing:.06em;text-transform:uppercase;color:var(--t2);
-}
-.z-engines-bar__pills{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.z-queries-list{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.z-query-pill{
-  display:inline-flex;align-items:center;
-  padding:3px 10px;border:1.5px solid var(--lines);border-radius:6px;
-  background:var(--c3);font-size:.82rem;color:var(--ink);font-weight:500;
-}
-/* Fix 1 — engine pill: same radius 6px, unified language */
-.z-engine-pill{
-  display:inline-flex;align-items:center;gap:5px;
-  padding:3px 9px 3px 4px;border:1.5px solid var(--lines);border-radius:6px;
-  background:var(--c3);
-}
-.z-engine-pill__av{
-  width:18px;height:18px;border-radius:4px;flex-shrink:0;
-  display:flex;align-items:center;justify-content:center;
-  font-family:"JetBrains Mono",monospace;font-size:.56rem;font-weight:700;color:#fff;
-}
-/* Fix 2 — engine name heavier than value */
-.z-engine-pill__name{font-size:.8rem;font-weight:600;color:var(--ink)}
-.z-engine-pill__val{font-family:"JetBrains Mono",monospace;font-size:.72rem;font-weight:700;margin-left:2px}
-
-/* Actions — full width */
-.z-section-title--amber{
-  font-family:"JetBrains Mono",monospace;font-size:.70rem;font-weight:700;
-  text-transform:uppercase;letter-spacing:.12em;
-  color:#92400e;background:var(--amberBg);border-bottom:1px solid var(--amberLine);
-  padding:12px 48px 10px;
-}
-
-/* Actions */
-.z-actions{background:var(--amberBg)}
-.z-action-list{list-style:none;padding:0;margin:0}
-.z-action-item{
-  display:flex;align-items:flex-start;gap:10px;padding:14px 48px;
-  border-bottom:1px solid var(--amberLine);
-}
-.z-action-item:last-child{border-bottom:none}
-.z-action-item::before{content:"→";color:var(--amber);font-family:"JetBrains Mono",monospace;font-weight:700;flex-shrink:0;line-height:1.55;}
-.z-action-item input{display:none}
-.z-action-main{flex:1;min-width:0}
-.z-action-label{font-size:.84rem;line-height:1.5;color:var(--ink)}
-.z-action-label strong{color:#78350f;font-weight:600}
-.z-action-label code{background:#fde68a;color:#78350f;font-size:.78em;padding:1px 4px;border-radius:2px;font-family:"JetBrains Mono",monospace}
-.z-action-label a{color:var(--amber)}
-.z-action-item em{display:block;margin-top:4px;color:#92400e;font-style:normal;font-size:.77rem;line-height:1.5}
-.z-action-time{font-family:"JetBrains Mono",monospace;font-size:.62rem;font-weight:700;background:rgba(120,53,15,.18);border-radius:2px;padding:2px 7px;color:#78350f;white-space:nowrap;flex-shrink:0;align-self:flex-start;margin-top:2px}
-
-/* Zone 4 — Details */
-.report-body{padding:0 48px 64px;background:var(--white)}
-@media(max-width:580px){.report-body{padding:0 20px 48px}}
-.report-body h2{
-  font-family:"JetBrains Mono",monospace;font-size:.72rem;font-weight:700;
-  letter-spacing:.12em;text-transform:uppercase;color:var(--t2);
-  margin:48px 0 14px;border:none;background:none;padding:0 0 9px;
-  border-bottom:1px solid var(--line);
-}
-.report-body h3{font-size:.95rem;font-weight:700;color:var(--ink);margin:22px 0 7px;letter-spacing:-.01em}
-.report-body p{margin:10px 0}
-.report-body em{color:var(--t2);font-style:italic}
-.report-body strong{color:var(--ink);font-weight:600}
-.report-body a{color:var(--amber);text-decoration:underline;text-decoration-thickness:1px;text-underline-offset:2px}
-.report-body ul,.report-body ol{padding-left:20px;margin:8px 0}
-.report-body li{margin:4px 0}
-.report-body code{font-family:"JetBrains Mono",monospace;font-size:.82em;background:var(--c2);color:var(--ink);padding:2px 6px;border-radius:3px}
-.report-body pre{font-family:"JetBrains Mono",monospace;font-size:.78rem;line-height:1.55;background:var(--c2);color:var(--ink);border:1px solid var(--line);border-radius:4px;padding:14px 18px;overflow-x:auto;margin:14px 0}
-.report-body pre code{background:none;padding:0}
-
-/* Bloomberg tables */
-.report-body table{width:100%;border-collapse:collapse;margin:14px 0;font-size:.86rem;font-variant-numeric:tabular-nums lining-nums;background:transparent;border-radius:0}
-.report-body thead{border-top:1.5px solid var(--ink);border-bottom:1px solid var(--lines)}
-.report-body th{background:transparent!important;background-image:none!important;color:var(--ink)!important;padding:9px 14px!important;text-align:left!important;font-family:"JetBrains Mono",monospace!important;font-size:.62rem!important;font-weight:700!important;letter-spacing:.1em!important;text-transform:uppercase!important;border:none!important;white-space:nowrap!important}
-.report-body td{padding:10px 14px!important;background:transparent!important;border:none!important;border-bottom:1px solid var(--line)!important;vertical-align:top!important;color:var(--ink)!important}
-.report-body tbody tr:last-child td{border-bottom:1.5px solid var(--ink)!important}
-.report-body tbody tr:nth-child(even) td{background:var(--c2)!important}
-.report-body tbody tr:hover td{background:var(--line)!important;transition:background .1s}
-.report-body hr{border:none;border-top:1px solid var(--line);margin:44px 0 18px}
-
-/* Blockquote */
-.report-body blockquote{border-left:2px solid var(--amber);padding:10px 16px;margin:14px 0;background:#fffbeb;color:var(--t2);border-radius:0}
-.report-body blockquote p{margin:0;font-size:.92rem}
-.report-body blockquote strong{color:var(--ink)}
-
-/* Warning */
-.report-body .warning{background:#fff7ed!important;border:1px solid #fed7aa!important;border-radius:4px!important;padding:14px 18px!important;margin:16px 0!important;box-shadow:none!important}
-.report-body .warning h2{margin-top:0!important;border:none!important}
-
-/* Score cards — hidden (shown in dashboard instead) */
-.report-body .score-cards,.report-body h2[data-zone="metrics"]{display:none!important}
-
-/* Engine action cards */
-.report-body .engine-actions{display:grid!important;grid-template-columns:repeat(auto-fill,minmax(260px,1fr))!important;gap:10px!important;margin:14px 0!important}
-.report-body .ea-card{background:var(--c2)!important;border:1px solid var(--line)!important;border-left:3px solid!important;border-radius:4px!important;padding:15px 17px!important;box-shadow:none!important;transform:none!important;transition:background .12s!important}
-.report-body .ea-card:hover{background:var(--line)!important}
-.report-body .ea-card--urgent{background:#fff7ed!important}
-.report-body .ea-header{display:flex!important;align-items:center!important;gap:8px!important;margin-bottom:9px!important}
-.report-body .ea-name{font-weight:600!important;font-size:.88rem!important;color:var(--ink)!important}
-.report-body .ea-badge{font-family:"JetBrains Mono",monospace!important;font-size:.61rem!important;font-weight:700!important;padding:2px 6px!important;border-radius:3px!important;margin-left:auto!important;letter-spacing:.06em!important;text-transform:uppercase!important}
-.report-body .ea-why{font-size:.8rem!important;color:var(--t2)!important;margin:0 0 9px!important;line-height:1.5!important}
-.report-body .ea-tips{padding-left:17px!important;margin:0!important}
-.report-body .ea-tips li{font-size:.8rem!important;margin:4px 0!important;color:var(--ink)!important}
-
-/* SVG charts */
-.report-body svg{max-width:100%;height:auto;display:block;margin:14px 0}
-.report-body li svg{display:inline-block!important;margin:0 6px -3px!important;vertical-align:middle!important}
-.report-body svg text[fill="#0f172a"]{fill:var(--ink)!important}
-.report-body svg text[fill="#475569"]{fill:var(--t2)!important}
-.report-body svg text[fill="#64748b"]{fill:var(--t3)!important}
-.report-body svg rect[fill="#475569"]{fill:var(--t2)!important}
-
-/* Competitor table overrides */
-.report-body div[style*="overflow-x:auto"]{margin:14px 0!important}
-.report-body div[style*="overflow-x:auto"]>table{border-top:1.5px solid var(--ink)!important;border-collapse:collapse!important;border-radius:0!important;box-shadow:none!important;background:transparent!important}
-.report-body div[style*="overflow-x:auto"] th{background:transparent!important;background-image:none!important;color:var(--ink)!important;padding:9px 14px!important;font-family:"JetBrains Mono",monospace!important;font-size:.61rem!important;font-weight:700!important;letter-spacing:.1em!important;text-transform:uppercase!important;border:none!important;white-space:nowrap!important}
-.report-body div[style*="overflow-x:auto"] td{background:transparent!important;border-bottom:1px solid var(--line)!important;border-left:none!important;border-right:none!important;border-top:none!important;padding:10px 14px!important;vertical-align:top!important;font-size:.84rem!important;color:var(--ink)!important}
-.report-body div[style*="overflow-x:auto"] tbody tr:nth-child(even) td{background:var(--c2)!important}
-.report-body div[style*="overflow-x:auto"] tbody tr:last-child td{border-bottom:1.5px solid var(--ink)!important}
-.report-body div[style*="overflow-x:auto"] td[style*="#fff9f9"]{background:#fff7ed!important;box-shadow:inset 2px 0 0 #dc2626!important}
-.report-body div[style*="overflow-x:auto"] span[style*="#fee2e2"]{background:transparent!important;color:#dc2626!important;border:none!important;padding:0!important}
-.report-body div[style*="overflow-x:auto"] span[style*="#9f1239"],.report-body div[style*="overflow-x:auto"] span[style*="fecdd3"],.report-body div[style*="overflow-x:auto"] span[style*="#fff0f0"]{background:transparent!important;color:#dc2626!important;border:1px solid rgba(220,38,38,.35)!important;border-radius:3px!important;font-family:"JetBrains Mono",monospace!important;font-size:.67rem!important;font-weight:500!important;padding:1px 5px!important}
-
-/* Footer */
-.report-body hr+p,.report-body p:last-child{font-family:"JetBrains Mono",monospace;font-size:.66rem;color:var(--t3);letter-spacing:.04em;margin-top:10px}
-.report-body hr+p em{font-style:normal}
-.report-body hr+p code{background:transparent;color:var(--t2);padding:0}
-
-@media print{body{background:#fff!important}}
-</style>
-</head>
-<body>
-<div id="root"></div>
-<script>
-  const md = ${mdJson};
-  marked.setOptions({ gfm: true, breaks: false });
-  document.getElementById('root').innerHTML = marked.parse(md);
-
-  // Original warning logic — unchanged
-  document.querySelectorAll('h2').forEach(function(h) {
-    if (h.textContent.indexOf('\u26a0') !== -1) {
-      var sec = document.createElement('div');
-      sec.className = 'warning';
-      var node = h.nextSibling, sib = [];
-      while (node && node.tagName !== 'H2' && node.tagName !== 'H1') {
-        sib.push(node); node = node.nextSibling;
-      }
-      h.parentNode.insertBefore(sec, h);
-      sec.appendChild(h);
-      sib.forEach(function(s){ sec.appendChild(s); });
-    }
-  });
-
-  // Dashboard restructure
-  (function(){
-    var root = document.getElementById('root');
-    var h1s = root.querySelectorAll('h1');
-    var pageH1 = h1s[0], heroH1 = h1s[1];
-    var score = heroH1 ? (parseInt(heroH1.textContent) || 0) : 0;
-
-    var titleTxt = pageH1 ? pageH1.textContent : '';
-    var bm = titleTxt.match(/AEO Report\s*[\u2014\-]+\s*(.+)$/);
-    var brand = bm ? bm[1].trim() : titleTxt;
-
-    var metaEl = pageH1 && pageH1.nextElementSibling && pageH1.nextElementSibling.tagName === 'P'
-                 ? pageH1.nextElementSibling : null;
-    var metaTxt = metaEl ? metaEl.textContent.trim() : '';
-
-    var trendTxt = '';
-    if (heroH1 && heroH1.nextElementSibling && heroH1.nextElementSibling.tagName === 'P')
-      trendTxt = heroH1.nextElementSibling.textContent.trim();
-
-    var focusTxt = '';
-    if (heroH1) {
-      var fn = heroH1.nextElementSibling;
-      while (fn && fn.tagName !== 'H2') {
-        if (fn.tagName === 'BLOCKQUOTE') { focusTxt = fn.textContent.trim(); break; }
-        fn = fn.nextElementSibling;
-      }
-    }
-
-    var tlBg = score>=60?'#059669':score>=25?'#d97706':score>=1?'#ea580c':'#dc2626';
-    var tlLbl = score>=60?'STRONG':score>=25?'PRESENT':score>=1?'EMERGING':'INVISIBLE';
-
-    // Engine data — only X/Y cards (engines), skip Overall percentage card
-    var AVATAR_MAP={'ChatGPT':'GP','Gemini':'GE','Claude':'CL','Perplexity':'PP','OpenAI':'OA'};
-    var engines = [];
-    root.querySelectorAll('.sc').forEach(function(card){
-      var lbl=card.querySelector('.sc-lbl'), val=card.querySelector('.sc-val'), sub=card.querySelector('.sc-sub');
-      if(!lbl||!val) return;
-      var name=lbl.textContent.trim(), value=val.textContent.trim(), color=val.style.color||tlBg, pct=0;
-      if(value.indexOf('/')===-1) return; // skip Overall and non-engine cards
-      var p=value.split('/'),h=parseInt(p[0])||0,t=parseInt(p[1])||1;
-      pct=Math.round(h/t*100);
-      engines.push({name:name,value:value,color:color,pct:pct,sub:sub?sub.textContent.trim():''});
-    });
-
-    // Actions
-    var actItems=[], actH2=null;
-    Array.from(root.querySelectorAll('h2')).forEach(function(h){
-      if(/actions this week/i.test(h.textContent)) actH2=h;
-    });
-    if(actH2){
-      var an=actH2.nextElementSibling;
-      while(an && an.tagName!=='H2'){
-        if(an.tagName==='UL'||an.tagName==='OL')
-          Array.from(an.children).forEach(function(li){actItems.push(li.innerHTML);});
-        an=an.nextElementSibling;
-      }
-    }
-
-    function xe(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-
-    // Parse metaTxt into clean parts
-    var domain='', dateRange='', runCount='';
-    if(metaTxt){
-      var dm=metaTxt.match(/\b([a-z0-9][a-z0-9.-]*\.[a-z]{2,6})\b/i);
-      if(dm) domain=dm[1];
-      var dtm=metaTxt.match(/(\d{4}-\d{2}-\d{2})\s*[\u2192>-]+\s*(\d{4}-\d{2}-\d{2})/);
-      if(dtm) dateRange=dtm[1]+' \u2192 '+dtm[2];
-      var rm=metaTxt.match(/(\d+)\s+runs?/i);
-      if(rm) runCount=rm[1]+' runs';
-    }
-
-    // Parse trend into badge parts
-    var trendBadge='';
-    if(trendTxt){
-      var tArr=trendTxt.split(/\s*\u00b7\s*/);
-      var delta=tArr[0]?tArr[0].trim():'';
-      var checks=tArr[1]?tArr[1].trim():'';
-      trendBadge=(delta?xe(delta):'')+(checks?' \u00b7 '+xe(checks):'');
-    }
-
-    // Build Zone 1
-    var metaLine=xe(brand)+(domain?' \u00b7 '+xe(domain):'');
-    var datesLine=(dateRange?xe(dateRange):'')+((dateRange&&runCount)?' \u00b7 ':'')+xe(runCount);
-    var z1='<div class="z-status" style="background:'+tlBg+'">'
-      +'<div class="z-status__score">'+score+'<span class="z-status__pct">%</span></div>'
-      +'<div class="z-status__meta">'
-      +'<div class="z-status__label">'+xe(tlLbl)+'</div>'
-      +'<div class="z-status__brand">'+metaLine+'</div>'
-      +(datesLine.trim()?'<div class="z-status__dates">'+datesLine+'</div>':'')
-      +(trendBadge?'<div class="z-status__trend-badge">'+trendBadge+'</div>':'')
-      +'</div></div>';
-
-    // Extract tested queries from DOM
-    var queries=[];
-    Array.from(root.querySelectorAll('h2')).forEach(function(h2){
-      if(!/trend per query/i.test(h2.textContent)) return;
-      var n=h2.nextElementSibling;
-      while(n&&n.tagName!=='H2'){
-        if(n.tagName==='UL'||n.tagName==='OL'){
-          Array.from(n.querySelectorAll('li')).forEach(function(li){
-            var clone=li.cloneNode(true);
-            Array.from(clone.querySelectorAll('svg')).forEach(function(s){s.remove();});
-            var txt=clone.textContent.trim().replace(/^[A-Z0-9]+:\s*/,'');
-            if(txt) queries.push(txt);
-          });
-        }
-        n=n.nextElementSibling;
-      }
-    });
-    // Fallback: Competitor Intelligence table first column
-    if(queries.length===0){
-      Array.from(root.querySelectorAll('h2')).forEach(function(h2){
-        if(!/competitor intelligence/i.test(h2.textContent)) return;
-        var n=h2.nextElementSibling;
-        while(n&&n.tagName!=='H2'){
-          if(n.querySelectorAll){
-            Array.from(n.querySelectorAll('tbody tr td:first-child')).forEach(function(td){
-              var t=td.textContent.trim();
-              if(t) queries.push(t);
-            });
-          }
-          n=n.nextElementSibling;
-        }
-      });
-    }
-
-    // Build engine pills bar
-    var hasQ=queries.length>0;
-    var engBar='<div class="z-engines-bar">'
-      +'<div class="z-engines-bar__left">'
-      +'<span class="z-engines-bar__lbl">Coverage</span>'
-      +'<div class="z-engines-bar__pills">';
-    engines.forEach(function(e){
-      var initials=AVATAR_MAP[e.name]||e.name.substring(0,2).toUpperCase();
-      engBar+='<span class="z-engine-pill">'
-        +'<span class="z-engine-pill__av" style="background:'+e.color+'">'+initials+'</span>'
-        +'<span class="z-engine-pill__name">'+xe(e.name)+'</span>'
-        +'<span class="z-engine-pill__val" style="color:'+e.color+'">'+xe(e.value)+'</span>'
-        +'</span>';
-    });
-    engBar+='</div></div>'
-      +'<div class="z-engines-bar__right">';
-    if(hasQ){
-      var qlbl='Checked against '+queries.length+' quer'+(queries.length===1?'y':'ies');
-      engBar+='<span class="z-queries-lbl">'+qlbl+'</span>'
-        +'<div class="z-queries-list">';
-      queries.forEach(function(q){
-        engBar+='<span class="z-query-pill">'+xe(q)+'</span>';
-      });
-      engBar+='</div>';
-    }
-    engBar+='</div></div>';
-
-    // Build Zone 3 (actions)
-    var z3='<div class="z-actions"><div class="z-section-title z-section-title--amber">\u26a1 Actions This Week</div><ul class="z-action-list">';
-    if(actItems.length>0)
-      actItems.slice(0,7).forEach(function(i){
-        // Strip hidden checkbox
-        var html=i.replace(/<input[^>]*>/g,'').trim();
-        // Extract time estimate after em-dash
-        var timeBadge='';
-        var sep=' \u2014 ';
-        var di=html.indexOf(sep);
-        if(di!==-1){
-          var after=html.slice(di+sep.length);
-          if(after.charAt(0)==='~'){
-            var ei=after.indexOf('<em');
-            timeBadge=(ei===-1?after:after.slice(0,ei)).trim();
-            html=html.slice(0,di)+(ei===-1?'':after.slice(ei));
-          }
-        }
-        // Split label and description (em)
-        var emStart=html.indexOf('<em');
-        var labelPart=(emStart===-1?html:html.slice(0,emStart)).trim();
-        var descPart=emStart===-1?'':html.slice(emStart);
-        var timeHtml=timeBadge?'<span class="z-action-time">'+timeBadge+'</span>':'';
-        z3+='<li class="z-action-item">'
-          +'<div class="z-action-main">'
-          +'<div class="z-action-label">'+labelPart+'</div>'
-          +descPart
-          +'</div>'
-          +timeHtml
-          +'</li>';
-      });
-    else z3+='<li class="z-action-item">No actions found — run a fresh report.</li>';
-    z3+='</ul></div>';
-
-    var dash=document.createElement('div');
-    dash.id='dashboard';
-    dash.innerHTML=z1+engBar+z3;
-    root.insertBefore(dash, root.firstChild);
-
-    // Hide replaced sections
-    function hideBlock(pat){
-      Array.from(root.querySelectorAll('h2,h3')).forEach(function(h){
-        if(!pat.test(h.textContent)) return;
-        h.style.display='none';
-        var n=h.nextElementSibling;
-        while(n && n.tagName!=='H2' && n.tagName!=='H1'){
-          n.style.display='none'; n=n.nextElementSibling;
-        }
-      });
-    }
-    if(pageH1) pageH1.style.display='none';
-    if(metaEl) metaEl.style.display='none';
-    if(heroH1){
-      heroH1.style.display='none';
-      var hn=heroH1.nextElementSibling;
-      while(hn && hn.tagName!=='H2'){hn.style.display='none';hn=hn.nextElementSibling;}
-    }
-    hideBlock(/your aeo visibility/i);
-    hideBlock(/key metrics/i);
-    hideBlock(/actions this week/i);
-    hideBlock(/how your score compares/i);
-
-    // Wrap remaining nodes in .report-body
-    var body=document.createElement('div');
-    body.className='report-body';
-    Array.from(root.children).forEach(function(c){
-      if(c.id!=='dashboard') body.appendChild(c);
-    });
-    root.appendChild(body);
-  })();
-<\/script>
-</body>
-</html>`;
-
-  const { tmpdir } = await import('node:os');
-  const htmlPath = join(tmpdir(), `aeo-report-${latest}.html`);
-  await writeFile(htmlPath, html, 'utf-8');
-
-  const { execSync } = await import('node:child_process');
-  const opener = process.platform === 'darwin' ? 'open'
-    : process.platform === 'win32' ? 'start'
-    : 'xdg-open';
-  execSync(`${opener} "${htmlPath}"`);
-
-  console.log(`\n${c.green}Opened in browser: ${htmlPath}${c.reset}\n`);
-}
+// ─── Commands (preview) — REMOVED in v0.8 ───
 
 // ─── Commands (run-manual) ───
 
@@ -2572,7 +2627,8 @@ async function cmdRunManual(argv) {
   }
 
   const config = JSON.parse(await readFile(CONFIG_FILE, 'utf-8'));
-  const { brand, domain, queries } = config;
+  const { brand, domain, queries: rawQueriesManual } = config;
+  const { texts: queries, tags: queryTagsManual } = normalizeQueries(rawQueriesManual);
   const providerCfg = (config.providers || DEFAULT_CONFIG.providers)[providerName] || PROVIDERS[providerName];
   const providerLabel = PROVIDERS[providerName].label;
   const modelUsed = providerCfg.model || 'manual';
@@ -2608,12 +2664,23 @@ async function cmdRunManual(argv) {
     const citations = extractUrls(text);
     const mention = detectMention(text, citations, brand, domain);
     const position = mention === 'yes' ? findPosition(text, brand, domain) : null;
-    const extractionManual = await extractWithTwoModels({
-      text, brand, domain,
-      category: config.category || '',
-      primary:   extractionProvidersManual.primary,
-      secondary: extractionProvidersManual.secondary,
-    });
+    // Extraction and sentiment run in parallel (independent classify-tier calls).
+    const sentimentTaskManual = (mention === 'yes' || mention === 'src')
+      ? classifySentimentWithTwoModels({
+          text, brand, domain,
+          primary:   extractionProvidersManual.primary,
+          secondary: extractionProvidersManual.secondary,
+        })
+      : Promise.resolve(null);
+    const [extractionManual, sentimentManual] = await Promise.all([
+      extractWithTwoModels({
+        text, brand, domain,
+        category: config.category || '',
+        primary:   extractionProvidersManual.primary,
+        secondary: extractionProvidersManual.secondary,
+      }),
+      sentimentTaskManual,
+    ]);
     const competitors           = extractionManual.verified;
     const competitorsUnverified = extractionManual.unverified;
     const canonicalCitations = [...new Set(citations)];
@@ -2643,6 +2710,8 @@ async function cmdRunManual(argv) {
       competitors,
       competitorsUnverified,
       ...(storeManualSources ? { extractionSources: extractionManual.sources } : {}),
+      ...(sentimentManual ? { sentiment: { label: sentimentManual.label, confidence: sentimentManual.confidence, rationale: sentimentManual.rationale } } : {}),
+      ...(queryTagsManual[qi] ? { tag: queryTagsManual[qi] } : {}),
       responseQuality,
       hasBrandInCitations: citations.some(u => u.toLowerCase().includes(domain.toLowerCase())),
       elapsedMs: null,
@@ -2688,6 +2757,8 @@ async function cmdRunManual(argv) {
     .sort((a, b) => b[1] - a[1]).slice(0, 20)
     .map(([url, count]) => ({ url, count }));
 
+  const topDomains = computeTopDomains(allResults, 10);
+
   const regressionThreshold = existing?.regressionThreshold
     ?? (typeof config.regressionThreshold === 'number' ? config.regressionThreshold : 10);
 
@@ -2703,6 +2774,8 @@ async function cmdRunManual(argv) {
     results: allResults,
     topCompetitors: sortedCompetitors.map(([name, count]) => ({ name, count })),
     topCanonicalSources,
+    topDomains,
+    adsDetected: summariseAdsAcrossResults(allResults),
   };
   await writeFile(summaryPath, JSON.stringify(summary, null, 2));
 
@@ -2737,6 +2810,95 @@ async function cmdRunManual(argv) {
 }
 
 // ─── Commands (diff) ───
+
+/**
+ * v0.6 — flatten every snapshot in aeo-responses/ to CSV (or JSON array) for
+ * BI ingestion. One row per result cell. Writes to stdout if --output is
+ * omitted, or to the file otherwise.
+ */
+async function cmdExport(args = {}) {
+  // Lazy-load CSV / JSON serialiser only when this command runs.
+  const { snapshotsToCsv, snapshotsToJson } = await import('../lib/report/csv-export.js');
+
+  const { readdirSync } = await import('node:fs');
+  const responsesDir = 'aeo-responses';
+  if (!existsSync(responsesDir)) {
+    console.error(`${c.red}No aeo-responses/ directory. Run: aeo-tracker run${c.reset}`);
+    process.exit(1);
+  }
+  const dates = readdirSync(responsesDir)
+    .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    .sort();
+  const snapshots = [];
+  for (const date of dates) {
+    const summaryPath = join(responsesDir, date, '_summary.json');
+    if (existsSync(summaryPath)) {
+      try { snapshots.push(JSON.parse(await readFile(summaryPath, 'utf-8'))); }
+      catch { /* skip malformed */ }
+    }
+  }
+  if (snapshots.length === 0) {
+    console.error(`${c.red}No _summary.json files found in aeo-responses/.${c.reset}`);
+    process.exit(1);
+  }
+
+  const fmt = (args.format || 'csv').toLowerCase();
+  if (fmt !== 'csv' && fmt !== 'json') {
+    console.error(`${c.red}Unknown format: ${fmt}. Use --format=csv or --format=json.${c.reset}`);
+    process.exit(1);
+  }
+
+  const output = fmt === 'csv' ? snapshotsToCsv(snapshots) : snapshotsToJson(snapshots);
+
+  if (args.output) {
+    await writeFile(args.output, output);
+    const rows = output.split('\n').length - 1;
+    console.log(`${c.green}✓ Exported ${snapshots.length} run${snapshots.length !== 1 ? 's' : ''} (${rows} rows) → ${args.output}${c.reset}`);
+  } else {
+    process.stdout.write(output);
+  }
+}
+
+/**
+ * v0.6 — parse Apache/nginx access log to count AI bot crawl frequency.
+ * User pipes their server's access.log through --log-file. We extract
+ * User-Agent strings, match against AI_BOTS, count requests per bot.
+ */
+async function cmdCrawlStats(args = {}) {
+  if (!args.logFile) {
+    console.error(`${c.red}--log-file=path required. Example: aeo-tracker crawl-stats --log-file=/var/log/nginx/access.log${c.reset}`);
+    process.exit(1);
+  }
+  if (!existsSync(args.logFile)) {
+    console.error(`${c.red}Log file not found: ${args.logFile}${c.reset}`);
+    process.exit(1);
+  }
+
+  const { parseAccessLog, summariseBotCrawls } = await import('../lib/report/log-parser.js');
+  const content = await readFile(args.logFile, 'utf-8');
+  const entries = parseAccessLog(content);
+  const stats = summariseBotCrawls(entries);
+
+  if (stats.totalBotHits === 0) {
+    console.log(`${c.yellow}No AI bot hits found in ${entries.length} log entries.${c.reset}`);
+    console.log(`${c.dim}This could mean: (1) AI bots haven't crawled yet, or (2) log format isn't Combined/CLF — check User-Agent field.${c.reset}`);
+    return;
+  }
+
+  console.log(`\n${c.bold}AI Bot Crawl Stats — ${args.logFile}${c.reset}`);
+  console.log(`${c.dim}${entries.length} log lines parsed · ${stats.totalBotHits} AI bot hits · ${Object.keys(stats.byBot).length} distinct bots${c.reset}\n`);
+
+  const sortedBots = Object.entries(stats.byBot).sort((a, b) => b[1].hits - a[1].hits);
+  for (const [bot, info] of sortedBots) {
+    const days = info.firstSeen && info.lastSeen ? `${info.firstSeen} → ${info.lastSeen}` : '';
+    console.log(`  ${c.cyan}${bot.padEnd(20)}${c.reset} ${String(info.hits).padStart(6)} hits   ${c.dim}${days}${c.reset}`);
+  }
+
+  if (args.output) {
+    await writeFile(args.output, JSON.stringify(stats, null, 2));
+    console.log(`\n${c.green}✓ Saved to ${args.output}${c.reset}`);
+  }
+}
 
 async function cmdDiff(argv) {
   const { readdirSync } = await import('node:fs');
@@ -2877,10 +3039,21 @@ ${c.bold}Usage:${c.reset}
   aeo-tracker diff A B     Compare two runs by date (YYYY-MM-DD); shows delta table
   aeo-tracker diff --last N       Compare the last N runs (default: 2)
   aeo-tracker diff --since DATE   Compare a date with the latest run
-  aeo-tracker report       Generate markdown report with inline SVG charts and verbatim
-                           AI quotes from all past runs. Output: aeo-reports/<date>/report.md
-  aeo-tracker report --output path.md   Custom output path
-  aeo-tracker report --html             Also emit report.html (single-file, offline-ready, zero runtime JS)
+  aeo-tracker report       Generate the report. Writes report.md (markdown) AND report.html
+                           (single-file bento layout — offline-ready, embedded fonts, vanilla JS)
+                           and opens the HTML in your browser.
+                           Output: aeo-reports/<date>/report.{md,html}
+  aeo-tracker report --output path.md   Custom output path (paired .html written alongside)
+  aeo-tracker report --no-html          Markdown only — skips HTML write and browser open.
+                                        Use for CI / email diffs / lightweight automation.
+  aeo-tracker report --no-open          Write report.{md,html} but don't auto-open the browser.
+  aeo-tracker report [--no-authority] [--no-entity-graph] [--no-page-signals] [--no-pricing]
+                           Skip optional fetch-heavy checks (Wikipedia/Reddit, sameAs reciprocity,
+                           own-domain HTML crawl, competitor pricing pages). Use behind a corp VPN,
+                           when rate-limited, or for a fully offline report. Cached results still load.
+  aeo-tracker export       Flatten all aeo-responses/*/_summary.json to CSV (default) or JSON.
+  aeo-tracker export --format=json --output=runs.json
+  aeo-tracker crawl-stats --log-file=path   Parse Apache/nginx access log → AI bot crawl frequency
   aeo-tracker --help       Show this help
   aeo-tracker --version    Show version
 
@@ -2892,6 +3065,12 @@ ${c.bold}Query validation:${c.reset}
   ${c.bold}--force${c.reset}                Bypass validation gate (for research on cross-industry interpretation noise)
   ${c.bold}--strict-validation${c.reset}    Cross-check query validation with 2 LLM providers (unanimous approve OR flag as split).
                          2× validation cost. Use when reliability > latency (e.g. CI pipelines).
+  ${c.bold}--geo=us,uk,de${c.reset}         Run each query under multiple regional contexts (multiplies cost by region count).
+                         Valid codes: us, uk, de, fr, es, it, ca, au, in, br, jp, nl. Adds "Visibility by Region" section.
+  ${c.bold}--depth=<mode>${c.reset}         web (default) — single web-search pass per cell.
+                         full — adds a training-data pass (no web search) where supported. Cost ~2×.
+                         auto — defaults to web; prompts you if last training-data baseline is stale (>14 days).
+                         Use full|auto to distinguish "absent from current SERPs" from "absent from training corpus".
 
 ${c.bold}Exit codes (after run):${c.reset}
   0                        Score stable or improved
@@ -2908,7 +3087,7 @@ ${c.bold}Environment variables:${c.reset}
     PERPLEXITY_API_KEY       Perplexity API key (Perplexity column)
   ${c.bold}Debug${c.reset}:
     AEO_DEBUG=1              Print raw stack traces alongside actionable panels
-                             (for bug reports — see github.com/DVdmitry/aeo-tracker/issues)
+                             (for bug reports — see github.com/webappski/aeo-tracker/issues)
     NO_COLOR=1               Strip ANSI escape codes from output (auto-detected
                              on non-TTY; set explicitly in CI logs if you see garbage)
 
@@ -2917,14 +3096,14 @@ ${c.bold}Quick start:${c.reset}
   export GEMINI_API_KEY=AIza...       # required
   aeo-tracker init --yes --brand=X --domain=x.com --auto
   aeo-tracker run
-  aeo-tracker report --html
+  aeo-tracker report
 
 ${c.bold}About:${c.reset}
   Built by Webappski (https://webappski.com), an AEO agency.
   We use this tool ourselves for our public AEO Visibility Challenge.
   Read Week 1: webappski.com/blog/aeo-visibility-challenge-week-1
 
-  Source: github.com/DVdmitry/aeo-tracker
+  Source: github.com/webappski/aeo-tracker
   License: MIT
 `;
 
@@ -2950,10 +3129,27 @@ const { values, positionals } = parseArgs({
     'from-dir': { type: 'string' },
     force:   { type: 'boolean', default: false },
     'strict-validation': { type: 'boolean', default: false },
+    geo:     { type: 'string' },
+    depth:   { type: 'string' },                 // web | full | auto (default: web)
+    format:  { type: 'string' },
+    'log-file': { type: 'string' },
     // Replay mode (see replay-mode block at top of file)
     replay:  { type: 'boolean', default: false },
     'replay-from': { type: 'string' },
     // End replay
+    // v0.7 — AEO Mission Control bridge opt-out
+    'no-mc-block': { type: 'boolean', default: false },
+    // v0.8 — bento HTML is the default; --no-html skips it for CI/email-only flows.
+    // `--html` is kept (no-op) for backwards-compat with existing scripts.
+    'no-html':       { type: 'boolean', default: false },
+    // Optional `report` fetches — skip when offline / behind corp VPN / rate-limited
+    'no-authority':    { type: 'boolean', default: false },
+    'no-entity-graph': { type: 'boolean', default: false },
+    'no-page-signals': { type: 'boolean', default: false },
+    'no-pricing':      { type: 'boolean', default: false },
+    // v0.7 — basket versioning (additive vs replace on --queries-only)
+    'add-queries': { type: 'boolean', default: false },
+    'replace-queries': { type: 'boolean', default: false },
   },
   allowPositionals: true,
   strict: false,
@@ -2973,12 +3169,20 @@ try {
     const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf-8'));
     console.log(pkg.version);
   } else if (command === 'init') {
-    await cmdInit({ ...values, strictValidation: values['strict-validation'] });
+    await cmdInit({
+      ...values,
+      strictValidation: values['strict-validation'],
+      queriesOnly: values['queries-only'],
+      addQueries: values['add-queries'],
+      replaceQueries: values['replace-queries'],
+    });
   } else if (command === 'run') {
     await cmdRun({
       json: values.json,
       force: values.force,
       strictValidation: values['strict-validation'],
+      geo: values.geo,
+      depth: values.depth,                       // web | full | auto (default: web)
       // Replay mode (see replay-mode block at top of file)
       replay: values.replay,
       replayFrom: values['replay-from'],
@@ -2989,9 +3193,20 @@ try {
   } else if (command === 'diff') {
     await cmdDiff(process.argv.slice(3));
   } else if (command === 'report') {
-    await cmdReport({ output: values.output, noOpen: values['no-open'], html: values.html });
-  } else if (command === 'preview') {
-    await cmdPreview({ input: values.output });
+    await cmdReport({
+      output: values.output,
+      noOpen: values['no-open'],
+      noHtml: values['no-html'],
+      noMcBlock: values['no-mc-block'],
+      noAuthority:    values['no-authority'],
+      noEntityGraph:  values['no-entity-graph'],
+      noPageSignals:  values['no-page-signals'],
+      noPricing:      values['no-pricing'],
+    });
+  } else if (command === 'export') {
+    await cmdExport({ format: values.format || 'csv', output: values.output });
+  } else if (command === 'crawl-stats') {
+    await cmdCrawlStats({ logFile: values['log-file'], output: values.output });
   } else {
     console.error(`${c.red}Unknown command: ${command}${c.reset}`);
     console.log(HELP);

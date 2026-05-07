@@ -23,7 +23,7 @@ This project ships with `"dependencies": {}` empty. Do not add runtime `npm` pac
 | Limit | Rule |
 |---|---|
 | **300 lines** | Default max per file (including comments/whitespace). |
-| Allowed exceptions | `bin/aeo-tracker.js` (CLI entry, will be decomposed in a future release), `lib/report/html.js` (single-file HTML renderer — part of the "zero deps" trade-off), `lib/report/sections.js` (markdown section renderers — same trade-off). These are tech debt, not a licence to keep growing — new code should live in new small modules. |
+| Allowed exceptions | `bin/aeo-tracker.js` (CLI entry, will be decomposed in a future release), `lib/report/html.js` (single-file HTML renderer — part of the "zero deps" trade-off), `lib/report/sections.js` (markdown section renderers — same trade-off), `lib/report/mc-bridge.js` (single-file CSS+HTML+JS bundle for inline injection of the Mission Control bridge block — same "zero deps inline template" trade-off as `html.js`/`sections.js`; three exports `bridgeCss`/`bridgeMarkup`/`bridgeJs`). These are tech debt, not a licence to keep growing — new code should live in new small modules. |
 | **Function max** | 50 lines. |
 | **Cyclomatic complexity** | ≤10 branches. If higher, extract sub-functions. |
 | **Params** | ≤4. If higher, switch to `options` object. |

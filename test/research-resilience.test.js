@@ -396,7 +396,7 @@ test('unexpected panel falls back to bug-report link for "other" errors', () => 
   const err = new TypeError('Cannot read properties of undefined');
   const text = formatUnexpectedErrorPanel({ err, command: 'run', useColor: false }).join('\n');
   assert.match(text, /likely a bug/);
-  assert.match(text, /github\.com\/DVdmitry\/aeo-tracker\/issues/);
+  assert.match(text, /github\.com\/webappski\/aeo-tracker\/issues/);
 });
 
 test('unexpected panel truncates very long error messages', () => {

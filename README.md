@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@webappski/aeo-tracker)](https://www.npmjs.com/package/@webappski/aeo-tracker)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
-[![GitHub stars](https://img.shields.io/github/stars/DVdmitry/aeo-tracker?style=social)](https://github.com/DVdmitry/aeo-tracker)
+[![GitHub stars](https://img.shields.io/github/stars/webappski/aeo-tracker?style=social)](https://github.com/webappski/aeo-tracker)
 
 **The free, open-source AEO (Answer Engine Optimization) tracker that measures how often AI answer engines name your brand — and generates the LLM-powered action plan to move the needle. An alternative to Profound, Otterly, and Peec.ai that hits official AI APIs instead of web-scraping.**
 
@@ -716,7 +716,7 @@ We benchmarked `init --auto` against manually-written "ideal" queries for 5 real
 
 The **strict 11/15 number is the honest one to cite**. Lenient is shown for transparency but should not be used in isolation — we explicitly criticise third-party AEO graders for that inflated-scoring pattern ([see "Compared to alternatives" below](#compared-to-alternatives)), and we hold ourselves to the same bar.
 
-Scoring rubric and per-brand breakdown: [`docs/benchmark-ideals.md`](https://github.com/DVdmitry/aeo-tracker/blob/main/docs/benchmark-ideals.md), [`docs/benchmark-results.md`](https://github.com/DVdmitry/aeo-tracker/blob/main/docs/benchmark-results.md) (links open on GitHub — `docs/` is not shipped in the npm tarball).
+Scoring rubric and per-brand breakdown: [`docs/benchmark-ideals.md`](https://github.com/webappski/aeo-tracker/blob/main/docs/benchmark-ideals.md), [`docs/benchmark-results.md`](https://github.com/webappski/aeo-tracker/blob/main/docs/benchmark-results.md) (links open on GitHub — `docs/` is not shipped in the npm tarball).
 
 Caveats that limit generality:
 - 5-brand sample — not a statistical population.
@@ -965,11 +965,11 @@ The tool is free and always will be. If you run it on your brand and want to dis
 
 Everything public about our methodology lives in the weekly reports at [webappski.com/blog](https://webappski.com/en/posts/aeo-visibility-challenge-week-1). The tool itself is the "what"; the blog is the "how".
 
-- 🐛 [Report a bug](https://github.com/DVdmitry/aeo-tracker/issues/new?template=bug_report.md)
-- 💡 [Request a feature](https://github.com/DVdmitry/aeo-tracker/issues/new?template=feature_request.md)
-- 💬 [Ask a question](https://github.com/DVdmitry/aeo-tracker/discussions)
-- 🔧 [Open a pull request](https://github.com/DVdmitry/aeo-tracker/pulls)
-- ⭐ [Star the repo](https://github.com/DVdmitry/aeo-tracker)
+- 🐛 [Report a bug](https://github.com/webappski/aeo-tracker/issues/new?template=bug_report.md)
+- 💡 [Request a feature](https://github.com/webappski/aeo-tracker/issues/new?template=feature_request.md)
+- 💬 [Ask a question](https://github.com/webappski/aeo-tracker/discussions)
+- 🔧 [Open a pull request](https://github.com/webappski/aeo-tracker/pulls)
+- ⭐ [Star the repo](https://github.com/webappski/aeo-tracker)
 
 ---
 

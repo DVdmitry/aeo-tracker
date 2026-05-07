@@ -2,6 +2,124 @@
 
 All notable changes to `@webappski/aeo-tracker`.
 
+## [0.3.0] — 2026-05-09
+
+Minor release on top of v0.2.7. **No breaking changes** to the v0.2.x CLI surface, config schema, or `_summary.json` consumers. Single jump on npm covering an internal dev cycle (tracked locally as 0.3.0 → 0.4.0 → 0.5.0 → 0.6.0 between 2026-04-23 and 2026-04-27, plus the security review and `--depth` work in early May).
+
+The core narrative: catch up to hosted competitors (Profound, Peec.ai, Otterly, AthenaHQ, Wellows, OneGlanse, Brandlight, Knowatoa) on capability without giving up the open-source / direct-API positioning.
+
+### Costs (read before running)
+
+- `aeo-tracker run` LLM cost is unchanged unless queries trigger brand mentions. Each cell with a mention now adds a two-model sentiment classification call: **~$0.0008 per mention** (skip-on-no-mention, cached in `_summary.json`). Typical run of 9 cells with 3 mentions: **+$0.0024**.
+- `aeo-tracker report` adds **~$0.003 one-off** for outreach-template drafts to the top-3 cited domains (single classify-tier LLM call, cached in `_summary.json::outreachTemplates` — re-running `report` does **not** re-spend).
+- `aeo-tracker run --geo=us,uk,de,...` multiplies LLM cost linearly by region count.
+- `aeo-tracker run --depth=full` doubles LLM cost (web pass + training-data pass).
+- All other new modules — crawlability audit, page signals, entity-graph reciprocity, competitor pricing tier, region context, response freshness, ads detector, UTM tracker, topic clusters — are **$0** (no LLM calls). Wikipedia / Reddit / pricing-page checks use free public APIs / direct HTTP.
+- Skip optional `report` fetches with `--no-authority` (Wikipedia + Reddit), `--no-page-signals`, `--no-entity-graph`, `--no-pricing` if you are behind a corporate VPN, hitting rate limits, or want a fully offline report.
+
+### Added — analysis & report sections
+
+- **Brand sentiment scoring (two-model cross-check).** Per-cell `positive | neutral | negative` label + one-line rationale + confidence tier (`high` / `low` / `single-model`). Reuses the same `gpt-5.4-mini + gemini-2.5-flash` pair as competitor extraction. ~$0.0008 per cell with a brand mention; skipped on `mention === 'no' | 'error'`. Stored as `results[].sentiment`. New module: `lib/report/sentiment-classify.js`.
+- **Domain share-of-voice table.** Aggregates `canonicalCitations` by hostname → top-10 publishers with citation count + share %. New summary field `topDomains`; new section `sectionDomainShareOfVoice()`. Backwards-compat: section computes on the fly for older snapshots.
+- **Historical 8-week trend chart.** Wide-format sparkline over last 8 snapshots with date+score tick row below. Auto-skipped on first run.
+- **Outreach email templates for top-3 cited domains.** One classify-tier LLM call drafts a short, specific email (subject < 60 chars, body < 150 words, soft CTA) per top-3 publisher. Cached in `_summary.json::outreachTemplates`. New module: `lib/report/outreach-templates.js`.
+- **Competitor 4-axis radar.** Side-by-side radars (presence / sentiment / rank / mentions) for the user's brand vs top-3 competitors.
+- **AI-bot crawlability audit (zero-LLM).** Pure-HTTP audit of `/robots.txt`, `/llms.txt`, `/sitemap.xml`. Maps GPTBot, OAI-SearchBot, ChatGPT-User, Google-Extended, GoogleOther, ClaudeBot, Claude-Web, anthropic-ai, PerplexityBot, Perplexity-User, CCBot, Bytespider to one of `allowed | blocked | partial | unspecified`. Cost: zero (no LLM, ~3 HTTPS GETs). New module: `lib/report/crawlability-audit.js`.
+- **Domain category breakdown.** Static rule-based classifier mapping topDomains to semantic buckets (Reviews / Forums / Q&A / News / Reference / Social / Agency / Blog / Docs / Vendor / Gov-Edu / Other). Per-row outreach hint. New module: `lib/report/domain-category.js`.
+- **Funnel / intent tags on queries.** `.aeo-tracker.json::queries[]` now accepts both string form (legacy) and `{ q, tag }` form. Visibility split per tag in a new section. Auto-hidden when no tags defined. New module: `lib/config/queries-normalize.js`.
+- **Actionable gap matrix.** Top-8 cells where competitors were cited but the user wasn't, each with a one-line concrete action grounded in this run's data (cell host / topDomain / comparison-page suggestion).
+- **Unified Visibility Index (UVI).** Single 0-100 composite score (presence 35% · sentiment 25% · rank 20% · citation 20%). Inspired by Rankability's SPI but open — every weight is in `lib/report/visibility-index.js`, every component is rendered alongside the composite.
+- **Discoverability Score.** 0-100 composite derived from crawlability inputs (robots 30% · bots-not-blocked 25% · sitemap 25% · llms.txt 20%). No extra fetches.
+- **Topical Visibility Clusters.** Rule-based query grouping by most-frequent shared content word. Visibility per cluster. Zero-LLM. New module: `lib/report/topic-cluster.js`.
+- **Authority-source presence.** Wikipedia REST API + Reddit search JSON checks. Free public APIs, no auth. Cached in `_summary.json::authorityPresence`. Disambiguation pages flagged separately. New module: `lib/report/authority-presence.js`.
+- **AI Ads / sponsored-content detector.** Heuristic precision-over-recall scanner for inline disclosure markers (`Sponsored`, `[paid]`, `(advertisement)`) and ad-network domain citations (DoubleClick, Taboola, Outbrain, Criteo). New module: `lib/report/ads-detector.js`.
+- **UTM citation tracker.** Surfaces UTM-tagged URLs from your own domain when AI engines cite them. Aggregates by `utm_source` / `utm_campaign` / engine. New module: `lib/report/utm-tracker.js`.
+- **Top-domains aggregation helper.** `lib/report/top-domains.js` — `computeTopDomains()` — replaces duplicated logic in `cmdRun` + `cmdRunManual`.
+
+### Added — new CLI flags & commands
+
+- **`aeo-tracker run --geo=us,uk,de,...`** — runs every query under multiple regional contexts. 12 regions: `us, uk, de, fr, es, it, ca, au, in, br, jp, nl`. Cost multiplies linearly with region count; warned explicitly before spending. Region tag on each result + region suffix in raw response filenames. Manual-paste path normalises queries but does not loop regions. Differentiation: Wellows/OneGlanse/AthenaHQ are single-region; Otterly supports 7+ at $29+/mo. We're free.
+- **`aeo-tracker run --depth=<web|full|auto>`** — selects how many LLM passes per cell.
+  - `web` (default) — single web-search pass. Identical to v0.2.7 behaviour.
+  - `full` — adds a second training-data pass (no web search) where supported (OpenAI / Gemini / Anthropic). Perplexity is search-only by design and is auto-skipped. Cost ~2× web-only. Distinguishes "absent from current SERPs" from "absent from training corpus".
+  - `auto` — defaults to `web`; prompts when the last training-data baseline is older than 14 days (or never run). Lets corpus drift get re-measured at a sparse cadence without weekly waste.
+  - New module: `lib/providers/non-search-model.js` — `deriveTrainingModel()` strips `-search-api` / `-search-preview[-YYYY-MM-DD]` suffixes for OpenAI; Gemini and Anthropic toggle web-search via request flags so the model name stays the same.
+  - Tracked in `_summary.json::lastFullRun` (date of most recent `depth=full` run) for the auto-prompt logic.
+- **`aeo-tracker export [--format=csv|json] [--output=path]`** — flatten every `_summary.json` snapshot into a tabular file for BI ingestion (Looker Studio, Google Sheets, Tableau). One row per result cell with 17 columns. RFC 4180 quoting. New module: `lib/report/csv-export.js`.
+- **`aeo-tracker crawl-stats --log-file=path`** — parse Apache/nginx access logs (Combined Log Format + CLF) and count AI-bot crawl frequency per bot, with first-seen / last-seen / top-5 paths. New module: `lib/report/log-parser.js`.
+
+### Added — HTML report (editorial bento layout)
+
+`aeo-tracker report --html` produces a single-file editorial-bento report: KPI hero with animated UVI counter, sticky outline rail with scroll-spy, six bento sections (`#overview` / `#visibility` / `#competitors` / `#citations` / `#actions` / `#diagnostics`), promote row (planner-prompt bridge + sponsor card), footer reprise, print stylesheet.
+
+- **Self-hosted variable fonts.** Three latin-subset variable woff2 files bundled inside the npm package (Fraunces display serif, Geist sans, JetBrains Mono — all SIL OFL 1.1) are base64-embedded at render time. Zero CDN dependency; the report works offline, in email, from `file://`. Total ~170KB per `report.html`. Loader: `lib/report/fonts/index.js`. Provenance + license: `lib/report/fonts/LICENSE.md`.
+- **Hero KPI strip** — UVI / mention rate / citations / top competitor in a 4-cell bento. UVI counts 0 → target on first paint with `prefers-reduced-motion` guard. Hero narrative is context-aware: 4 templates pick based on `(mentions, citations)` tuple — `cited but never named` is the actionable lift case (engines see your domain, just haven't promoted it to a named brand).
+- **Promote row** — bridge card (planner prompt copy) on the left, sponsor card on the right. Bridge has 5 states (`success` / `limited` / `expand` / `stale` / `fallback`) selected by `(daysSinceRun, queryCount, navigator.clipboard)`. Success path shows a top-center toast on copy, not a modal. Pre-flight gate disables the button when `queryCount < 10` or `daysSinceRun > 30`; tooltip on hover explains which condition failed and the exact CLI command to fix.
+- **Bento sections** — six numbered panels of `.cell.span-N` (2/3/4/6 column widths). Empty sections still render their numbered header + dashed `.cell-empty` placeholder so the rail stays continuous (no `01 02 03 — 05 06` holes that read as broken builds).
+- **Per-engine color tokens with fallback chain** — `--eng-gpt` (green), `--eng-gem` (blue), `--eng-cla` (purple), `--eng-perp` (teal). Unknown providers fall through `var(--c, var(--ink-3))`.
+- **Section content:**
+  - `01 Overview` — score trend chart (in-place SVG with axes + annotation), listicle-pitch KPI, topic cluster bars, top-3 gaps preview.
+  - `02 Visibility` — per-engine cards, query × engine matrix (Mention/Position/Sentiment sub-toggle), regions cell when `--geo` was used, verbatim quotes when populated.
+  - `03 Competitors` — most-named brands list (dark cell) + 4-axis radar.
+  - `04 Citations` — domain share-of-voice with own-domain marker, by-category breakdown, outreach drafts.
+  - `05 Actions` — heuristic day-by-day plan (Day labels with Week-fallback when distribution is skewed; chip hidden entirely when uncomputable).
+  - `06 Diagnostics` — site-readiness composite, authority presence, per-engine session cost, geo indicator, AI ads, UTM citations.
+- **Footer reprise** — Mission Control CTA only when bridge metadata was provided.
+- **Print stylesheet** — every section stacks naturally for PDF export; rail/footer-reprise hidden, ghost SVG hidden, dark cells inverted.
+- **Stale artifact cleanup** — `aeo-tracker report --html` sweeps orphaned `report.{md,html}` from older date dirs in `aeo-reports/` so post-rewrite layout drift can't mislead a reader who opens the wrong file.
+
+### Changed — visual redesign (editorial bento, canonical pass)
+
+Pixel-aligned to the v2 editorial-bento prototype (`handoff 3/templates/`). No structural changes to data flow, schema, or section order — purely typography, spacing, and component-shape adjustments.
+
+- **Canonical CSS lifted into `renderCss()`.** Stylesheet now mirrors `templates/styles.css` verbatim: `.mast-title` jumps to 64px display weight 300 with `--opsz 144`, hero number to 180px with `--opsz 144 --SOFT 100` (was 168px), engine-pill animation (`@keyframes pulse`), `.eng-pill` shrinks to 8px with shadowed glow, hero card gets 20px radius + radial accent gradient + 38/40 padding, `.rail` becomes a sticky 50-z bar with full-width backdrop-blur and 3px scaleX accent underline (was 1px border-bottom), `.cell` borders bump to 16px / padding 22-24, `.eng-card` gets a top accent strip via `::before`, `.matrix-toggle` becomes a dark-pill segmented control. `.btn-solid` (ink-on-paper) joins `.btn-accent` and `.btn-ghost`.
+- **Combined 4-axis radar.** Section 03 (Competitors) replaces the four per-brand radar grid with a single overlay chart: brand polygon (orange) over Top-N competitor average (dark, fill-opacity 0.18). Top-N average is per-axis arithmetic mean of the top-3 competitors by mentions count; if fewer than 3 are present, averages over all available (no zero-padding). New helper: `lib/svg/combined-radar.js` (~50 LoC, viewBox 0 0 280 240, hand-drawn polygons matching canonical reference). Headline branches off the gap: «Behind on every axis», «Ahead on N of 4 axes», «Mixed vs top-3 avg».
+- **MC bridge wrapper aligned with canonical class names.** Outer element is now `<article class="promote-card bridge mc-bridge mc-bridge-compact" id="mc-bridge">` (was `<section class="mc-bridge mc-bridge-compact">`). The 5-state machine (`success` / `limited` / `expand` / `stale` / `fallback`), all IDs targeted by `bridgeJs`, and the `[data-mc-trigger]` delegation handler are unchanged. Compact-variant inner padding zeroed because the outer `.promote-card` now provides the 24×26 padding.
+- **Footer-reprise + colophon refined.** Footer reprise picks up a 56px top margin, 28×32 padding, 16px radius, accent radial-gradient on the right edge, and the heading climbs to 22px display; colophon spacing tightens to 12px gap with `--line-strong` separator dot.
+
+- **Markdown → HTML converter** for legacy section markdown (`sectionDomainShareOfVoice` etc.). Zero-deps, `lib/report/markdown-to-html.js`. Handles headers, pipe tables, bold/italic/code/links, blockquotes, bullet lists, inline raw HTML pass-through.
+- `renderHtml(summary, snapshots, opts)` — second arg unlocks markdown sections. `opts.mcMetadata` enables the bridge.
+
+### Changed
+
+- **`aeo-tracker report` now writes the bento HTML by default and opens it in the browser.** Both `report.md` and `report.html` are written every time. Use `--no-html` to skip the HTML write + browser open (useful for CI / email-only flows). The legacy markdown→TMP-HTML preview path (and the undocumented `aeo-tracker preview` command) was removed — the single-file bento HTML is the canonical view. The `--html` flag is kept as a no-op so existing scripts keep working.
+- **`extractWithTwoModels` + `classifySentimentWithTwoModels` run in parallel** via `Promise.all` per cell (previously sequential). Halves the per-cell wall-clock for runs with mentions.
+- **`persistSnapshot()` helper** centralises atomic `_summary.json` writes (tmp + rename) — replaces 5 inline duplicated blocks across cache writers (citation classification, LLM actions, authority, crawlability, outreach). Random suffix is now `pid+Date.now()+randomBytes(4)` to avoid collisions on double-press.
+- **Region loop in `cmdRun`** properly indented; skipKey format unified to 5-component `query:region:provider:model:mode` in both load and lookup paths.
+- **Repository URL** updated from `github.com/DVdmitry/aeo-tracker` to `github.com/webappski/aeo-tracker` across README, error panels, help text.
+
+### Fixed
+
+- **TDZ crash on `aeo-tracker run --geo=...`.** Cost-warn line referenced `activeProviders.length` before the const declaration. Moved warning to fire after provider discovery. Reproducer in `/tmp/geo_crash.mjs` confirmed the fix.
+- **Cache-resume mismatch on non-geo runs.** Existing-summary load built 3-component skipKeys but the run-loop lookup used 4-component keys — non-geo runs lost resume-after-error behaviour silently. Now both sides use a 5-component key including `mode`.
+- **Discoverability note misleading.** Showed `allowedCount/total` while the score formula used `notBlocked = allowed + partial + unspecified`. A site with no robots.txt would score 100/100 but the note read `0/12 bots not blocked`. Note now matches the formula.
+- **`parseGeoFlag` inconsistent return shape.** Returned bare `[]` for falsy input vs `{ regions, invalid }` for valid. Consistent shape now.
+- **Reddit query escape.** `brand` containing embedded `"` produced an unbalanced quoted search. Strips quotes before wrapping multi-word brand names.
+
+### Security
+
+- **XSS hardening for HTML report.** `escMd()` helper (escapes `& < >`) applied to every user / LLM / third-party data interpolation in `lib/report/sections.js`: brand, queryText, competitor names, sentiment rationale, outreach template fields (subject / body / why / host), Wikipedia extract, Reddit subreddit names, UTM source/medium/campaign, ad sample snippets, topic cluster examples, region labels, industry classifier output.
+- **URL scheme allowlist in markdown→HTML.** `isSafeUrl()` permits only `https?:`, `mailto:`, `tel:`, anchors and relative paths in `[label](url)`. `javascript:`, `data:`, `vbscript:` are rewritten to `#`.
+- **Idempotent label escape.** `escapeHtmlIdempotent()` on link-label content — escapes raw `<` and `>` for defence-in-depth without double-encoding pre-escaped `&amp;` from upstream `escMd()`.
+
+### Tooling
+
+- `package.json` bumped `0.2.7 → 0.3.0`.
+- 23 new test scripts wired into root `test`: `test:sentiment`, `test:outreach`, `test:crawlability`, `test:category`, `test:queries`, `test:geo`, `test:mdhtml`, `test:htmlrender`, `test:uvi`, `test:topics`, `test:csv`, `test:logs`, `test:authority`, `test:ads`, `test:utm`, `test:topdomains`, `test:depth`. Plus 4 regression tests for XSS hardening and URL scheme allowlist in `test:mdhtml`.
+- `test:imports` extended with all 16 new modules (`sentiment-classify`, `outreach-templates`, `crawlability-audit`, `domain-category`, `geo-context`, `markdown-to-html`, `visibility-index`, `topic-cluster`, `csv-export`, `log-parser`, `authority-presence`, `ads-detector`, `utm-tracker`, `queries-normalize`, `top-domains`, `non-search-model`).
+- `--help` documents `--geo`, `--depth`, `aeo-tracker export`, `aeo-tracker crawl-stats`.
+
+**All 25 test suites green.**
+
+---
+
+> Internal dev-cycle history (NOT separate npm releases — collapsed into 0.3.0 above, kept here for git-archaeology only):
+> - 2026-04-27 — internal milestone "0.3.0" (sentiment, share-of-voice, trend, outreach, competitor radar)
+> - 2026-04-27 — internal milestone "0.4.0" (crawlability, domain categories, funnel tags, actionable gaps, `--geo`)
+> - 2026-04-27 — internal milestone "0.5.0" (UVI, discoverability score, topic clusters, markdown→HTML bridge)
+> - 2026-04-27 — internal milestone "0.6.0" (CSV export, crawl-stats, authority presence, ads detector, UTM tracker)
+> - 2026-05-04 — security review pass (XSS hardening) + `--depth` feature
+
 ## [0.2.5] — 2026-04-23
 
 Patch release. **No breaking changes.** Two UX quality-of-life improvements surfaced by dogfood testing of 0.2.4.
@@ -187,7 +305,7 @@ Previously in the 0.2.1 entry:
 - **Inner `resolve` → `mkProvider`** rename to stop shadowing `Promise.resolve`.
 - **`extractionSources` stored conditionally.** Per-cell extractor source arrays (per-model brand lists) are now written to `_summary.json` only when the two models disagreed or one failed. On unanimous agreement the sources are redundant — omitting them keeps the summary ~3× smaller over a year of weekly snapshots.
 - **`runOne` in `extractWithTwoModels` rewritten** from `.then(success, error)` callback form to an idiomatic async/`try`/`catch` block.
-- **GitHub URL in HTML report footer** corrected (`webappski/aeo-tracker` → `DVdmitry/aeo-tracker`).
+- **GitHub URL in HTML report footer** corrected (`webappski/aeo-tracker` → `webappski/aeo-tracker`).
 - **CLI `--help` text** cleaned up: `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `PERPLEXITY_API_KEY` sections now distinguish required vs optional explicitly; Source URL corrected.
 
 ### Fixed
@@ -305,138 +423,4 @@ Position grid cells now have `role="button"`, `tabindex="0"`, `aria-label`, and 
 
 ---
 
-## [0.5.0] — 2026-04-19
-
-### Added — Keyword research pipeline (major UX)
-
-**Replaces v0.4.0's single-shot auto-suggest with a multi-phase research pipeline.** Rationale: single-shot guessing produced ambiguous queries on the Webappski case — in Poland, "AEO" more commonly means "Authorized Economic Operator" (customs) than "Answer Engine Optimization", and the old approach silently measured the wrong industry. This release reframes query generation as research: brainstorm → filter → score → cross-model validate → select.
-
-- **Explicit category description (`--category` flag / interactive prompt)** — new step before LLM call asks "What does your company do?" The answer becomes the authoritative context for disambiguation. Auto-inferred fallback from site content used when unset.
-- **Brainstorm phase** — 1 LLM call generates ~25 candidate queries across 5 intent buckets (commercial, informational, vertical, problem, comparison). Non-negotiable prompt rules include acronym expansion and ≥3-industry vertical diversity.
-- **Local filter phase** — rejects branded, duplicate, too-short/long, and bare-ambiguous-acronym candidates with explicit reasons.
-- **Language-aware intent classifier** — reconciliation between brainstorm's tag and linguistic classification (EN/PL/DE supported; other languages fall back to brainstorm tag).
-- **Scoring** — 0–100 per candidate based on word-count sweet-spot, recency markers, specificity, long-tail structure, comparison structure, language match.
-- **Cross-model validation** — second LLM call using a DIFFERENT provider from brainstorm catches category-mismatches the first model missed (e.g. bare "AEO" that means customs). Skipped gracefully in single-provider mode.
-- **Intent-diverse selection** — picks exactly 1 commercial + 1 informational + 1 vertical (not top-3 by score). Fallback chain if a bucket is empty.
-- **Candidate pool** — 5 alternatives saved to `.aeo-tracker.json` under `candidatePool` for future swap without re-running LLM.
-- **Disambiguation warning in `aeo-tracker report`** — if score is 0% and top canonical sources suggest a different industry than the brand's site, the report now includes a warning suggesting `--refresh-keywords --category="<tighter>"`.
-
-### Added — Multiple init modes
-
-- **`--light` flag** — bypasses the research pipeline, uses v0.4.x-style single-shot suggest. Cost ~$0.003 instead of ~$0.005. For users who trust the LLM and want speed.
-- **`--keywords="q1,q2,q3"` flag (BYO)** — skip brainstorm entirely, provide your own 3 queries. $0 LLM cost. For power users / migration from other tooling.
-- **Single-provider mode** — if only one LLM provider has a configured API key, cross-model validation is skipped with a single info message (not N per-bucket warnings). Candidates are presented labelled `(unverified)`.
-
-### Added — Benchmark discipline
-
-Internal benchmark on 5 reference brands (TypelessForm, Webappski, Linear, Notion, Stripe) before release. Scoring rubric documented in `docs/benchmark-ideals.md`. Raw results in `docs/benchmark-results.md`.
-
-- **Strict score: 11/15 (73%)** semantic matches where intent + topic + specificity align tightly with manually-written ideals.
-- **Lenient score: 14/15 (93%)** where partial matches (same bucket and topic, slight variation in sub-intent) also count.
-- Both above internal ≥7/15 (47%) threshold.
-- Cost tight: mean $0.0050 per brand, max/min 1.10×.
-- Hallucination rate on competitor suggestions ~12% (vs ~40% observed on pre-v0.5 single-shot runs).
-
-**Honesty clause:** lenient scoring is shown as a secondary metric, not the headline, to avoid the same inflated-score pattern we criticise in third-party AEO graders. The strict number is the one to cite.
-
-### Changed
-
-- `aeo-tracker init` now defaults to the full research pipeline. Old behaviour available via `--light`.
-- `lib/init/suggest.js` remains exported as the `--light` path; v0.5 does not delete it.
-- `.aeo-tracker.json` may now contain a `candidatePool` field (additive; v0.4.x configs still readable).
-
-### Fixed
-
-- **Validator bias on narrowed audience** (Guard 5). When `CATEGORY_DESCRIPTION` included `"for X audience"`, the cross-model validator previously rejected legitimate vertical-expansion candidates (e.g. "AEO for healthcare" when category said "for SaaS"). Validator now receives a broadened category, stripping the audience qualifier, and correctly approves cross-audience vertical queries.
-- **Per-bucket single-provider warnings noise.** v0.5.0 initial implementation emitted 3 warnings ("no validated candidate for X, falling back to unvalidated") in single-provider mode — one per intent bucket. Replaced with a single info message up-front.
-
-### Added — Report visual upgrades (folded from v0.5.1 plan)
-
-- **Hero card with traffic-light status** (`🔴 INVISIBLE` / `🟠 EMERGING` / `🟡 PRESENT` / `🟢 STRONG`) — scannable in 1 second.
-- **Big score readout** in hero (e.g. `# 8%`) with trend marker (▲/▼/▪ BASELINE vs previous run).
-- **Score badge in H1 title** (e.g. `# AEO Report — Webappski · 🟠 8% EMERGING`) stays visible while scrolling.
-- **Baseline comparison block** — tells the user whether `0%` is catastrophic or the expected Week-1 norm. Shown only for score <60%.
-- **Radar chart** (`lib/svg/radar.js`) — per-engine hit rate on polar axes. Shape reveals skew (one engine strong, others 0) or uniform invisibility.
-- **YOU row accented in competitor barchart** (indigo `#6366f1`) — user sees their own count next to competitor counts instead of mentally comparing.
-- **Actions checkbox card moved to top** of render order with markdown `[ ]` format + effort estimate + rationale per action. Copy-paste into Todoist/Linear.
-- **Icon legend for heatmap** (🟢/🟡/🔴/⬜) as 4-row table replacing prose legend.
-- **Domain-grouped canonical sources** — collapses `example.com/page/A` + `/B` + `/C` into `example.com (3 pages, directory)`. Shows where authority concentrates, not individual URLs.
-- **First-run trend placeholder** — when only 1 snapshot exists, shows "W1 ● W2 W3 ... W12" horizon instead of hiding the section.
-
-### Deferred to v0.5.1
-
-- `aeo-tracker init --refresh-keywords` (drift-guarded in-place refresh)
-- Opt-in anonymised telemetry (P5)
-- Per-intent scoring refactor (Guard 6 full implementation — detection currently flags the issue but doesn't re-score)
-- Competitor suggestions integrated into the research pipeline (currently fetched via a separate single-shot suggest call)
-- Strengthening of the informational bucket in brainstorm (Linear case: fell back from comparison)
-
-### Notes
-
-- v0.4.0 was completed on disk but **never published to npm**. All of its features (smart init, markdown report, rich exit codes, manual paste mode, inline SVG, verbatim quotes) ship bundled into v0.5.0 as the cohesive first public release.
-- Guards 1–5 are fully implemented; Guard 6 is detected and warned but the per-intent scoring refactor is deferred.
-
----
-
-## [0.4.0] — 2026-04-19 (internal only, not published)
-
-### Added — Smart `init` with auto-suggest (major UX)
-- **Three-stage API key detection** — (1) standard names (`OPENAI_API_KEY`, etc.), (2) heuristic regex match for custom names (e.g. `OPENAI_API_KEY_DEV`, `CLAUDE_KEY`), (3) direct prompt for non-standard names when nothing else matches. `init` writes whichever names the user actually uses — no manual config edits needed afterward.
-- **Auto-configure queries and competitors from your site** — `aeo-tracker init` now asks "manual or auto?". Auto mode fetches your URL, extracts title/meta/headings, sends the excerpt to an LLM (Claude Sonnet / GPT-4o / Gemini — whichever key is available), and suggests 3 unbranded queries + up to 5 competitors in the site's detected language. User reviews and can accept / edit / reject. One-time cost: ~$0.01.
-- **Defensive fetching** — follows redirects, 10s timeout, sends descriptive `User-Agent`, normalizes input (prepends `https://` if missing), flags JS-only SPAs, Cloudflare challenges, and tiny HTML pages with a warning before proceeding.
-- **Robust LLM JSON parsing** — strips markdown code fences, extracts first `{...}` block, retries once on parse failure, falls back to manual input on second failure.
-- **Prompt-injection mitigation** — scraped site content is fenced inside explicit `<<<BEGIN_SITE_CONTENT … END_SITE_CONTENT>>>` markers with an instruction that content inside is untrusted.
-- **Privacy consent before LLM call** — explicit "I will fetch X, extract Y, send to Z" summary with y/n prompt. No silent exfiltration.
-- **Atomic config writes** — config is written to `.aeo-tracker.json.tmp` then renamed. Ctrl-C mid-init leaves no partial state.
-- **Existing-config overwrite prompt** — previously `init` aborted silently if `.aeo-tracker.json` existed. Now asks `[y/N]`.
-
-### Added — Phase B (markdown report + SVG primitives)
-- **`lib/init/`** — three new modules for smart init: `keys.js` (3-stage detection), `fetch-site.js` (timeout/redirect/SPA-detect/privacy), `suggest.js` (prompt-building + JSON parsing + retry).
-- **`lib/svg/`** — four zero-dependency inline SVG primitives: `heatmap`, `barchart`, `sparkline`, `deltaArrow`. Neutral tailwind palette (`#10b981` / `#ef4444` / `#94a3b8`), fixed — never brand colours.
-- **`lib/report/extract-quotes.js`** — pulls verbatim sentences around brand/domain mentions from raw AI responses. Sentence-boundary breaking, markdown noise stripping, snippet dedup, citation-only fallback per D5.
-- **`lib/report/sections.js`** — deterministic section builders for the report: header, top numbers, AI × Query matrix (heatmap), diff, trend (sparklines), verbatim quotes, tracked competitors (barchart), canonical sources (barchart), footer.
-- **`lib/report/markdown.js`** — aggregates sections into a complete markdown document. Also exports `parseRawResponse(provider, raw)` which derives plain text from saved API response JSON per provider shape.
-- **New `aeo-tracker report`** — builds `aeo-reports/<date>/report.md` from all prior `_summary.json` files plus raw responses for the latest run. Inline SVG charts, verbatim AI quotes, graceful degradation when only one run exists.
-
-### Removed
-- **Old HTML/Chart.js report generator** (deprecated since 0.3.0) — deleted. Replaced by markdown-first engine above. No external CDN dependency anymore.
-
-### Notes
-- End-to-end smoke-test passed on manual-paste fixtures from 0.3.1 — report correctly extracted two verbatim Perplexity quotes, rendered heatmap and barcharts inline, degraded diff/trend sections gracefully for single-run data.
-- Opt-in dual-model (`previousModel` per provider) is **not** shipped in 0.4.0 — decision deferred. It doubles API cost without adding value-signal today; will ship only if a real need appears.
-- Next: 0.5.0 HTML wrapper for the markdown report (single-file, zero-deps).
-
-## [0.3.1] — 2026-04-18
-
-### Added
-- **`aeo-tracker run-manual <provider> --from-dir <dir>`** — paste-based mode for engines without a usable API. Reads `q1.txt`, `q2.txt`, `q3.txt` from the given directory, extracts URLs via regex, runs the same mention/competitor/source detection pipeline as auto runs. Merges into today's `_summary.json` (recomputing aggregates), overwriting prior results for the same provider.
-- `extractUrls(text)` in `lib/mention.js` — regex-based URL extractor with trailing-punctuation stripping.
-- Per-result `source` field (`"api"` or `"manual-paste"`) to distinguish origins in downstream tooling.
-
-### Use case
-Perplexity (Pro-only API), Microsoft Copilot (no consumer API), ChatGPT Pro UI, Claude.ai — all can now feed into the same pipeline. Manual results participate in `diff`, exit codes, future reports without special-casing.
-
-## [0.3.0] — 2026-04-18
-
-### Added
-- **Perplexity provider** via Sonar API (`sonar` model, ~$0.005/query). Set `PERPLEXITY_API_KEY` to enable.
-- **`aeo-tracker diff`** command — compare two runs by date, `--last N`, or `--since DATE`. Prints cell changes, competitor movements, canonical-source movements, and a score delta.
-- **Explicit competitors list** in config (`competitors: [...]`). When set, the tool does case-insensitive exact detection with position tracking, reported as `trackedCompetitors` in `_summary.json`. The heuristic `**Bold Name**` extractor remains as fallback.
-- **Canonical sources tracking** — dedup'd citation URLs per check (`canonicalCitations`) and aggregated (`topCanonicalSources`) across the run. Surfaces the pages AI engines keep citing for your vertical.
-- **`--json` flag** on `run` — structured JSON to stdout, ANSI/progress suppressed. Pipe to `jq` in CI.
-- **Rich exit codes** (`0/1/2/3`) — state-based instead of binary. `regressionThreshold` config field (default 10pp) controls the regression threshold. The `diff` command uses the same scheme.
-- **Per-provider latency** in `_summary.json` (`elapsedMs`). Free drift signal — silent model swaps often change wall-time.
-
-### Changed
-- Code reorganised into `lib/` modules: `config.js`, `mention.js`, `diff.js`, `providers/{openai,gemini,anthropic,perplexity,index}.js`. `bin/aeo-tracker.js` kept as a thin CLI dispatcher. No behaviour change from the refactor alone.
-- `_summary.json` gains additive fields (`regressionThreshold`, `trackedCompetitors`, `topCanonicalSources`, per-result `canonicalCitations`, `explicitCompetitors`, `elapsedMs`). **Non-breaking** — old consumers that ignore unknown fields continue to work; files written by v0.2.x remain readable.
-
-### Deprecated
-- The existing `report` command (HTML + Chart.js via CDN) prints a `[DEPRECATED]` warning. It still works. v0.4.0 replaces it with a markdown-first engine using inline SVG, removing the external CDN dependency. See `docs/v0.5-report-generator-plan.md`.
-
-### Notes
-- Default cost per run now **$0.065** (all four providers at 3 queries each); **$0.05** if Perplexity is omitted. No change for existing configs without Perplexity.
-- Semver stays on `0.x` while the public surface is still moving. A v1.0.0 bump is reserved for after 0.5.0 has been exercised in the field.
-
-## [0.2.0] — 2026-03-XX
-- Initial public release. `init` + `run` commands, ChatGPT/Gemini/Claude via official APIs, raw-response storage, competitor extraction.
+> _Earlier development history (pre-2026-04-23 internal version-numbering experiments) is archived in git log only. Those entries used non-canonical version numbers that were later reset before the v0.2.0 npm publishing line._

@@ -12,5 +12,9 @@ aeo-reports/
 .vscode/
 .claude/
 
+# Private planning docs — belong in webappka, not in the public CLI repo
+docs/MC-CLIENT-STATE-*.md
+docs/aeo-recommendations/
+
 # Tarball from `npm pack`
 *.tgz
