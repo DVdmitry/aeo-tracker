@@ -415,6 +415,10 @@ async function runValidationFlow({
   // interactive prompt / exit call. Default false preserves backward
   // compatibility for every existing call site.
   returnBlockersInsteadOfAbort = false,
+  // Prompt callback for the "Save/run anyway? [y/N]" question. Passed in by
+  // the caller — same shared prompter the whole command uses, so we don't
+  // create a competing readline on the same stdin.
+  ask,
 }) {
   const willCallLLM = primary && (validationCache || []).length === 0
     ? queries.length > 0
@@ -470,11 +474,9 @@ async function runValidationFlow({
     return v;
   }
 
-  const { createInterface } = await import('node:readline');
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ans = await new Promise(resolve => {
-    rl.question(`${c.yellow}Save/run anyway? [y/N] ${c.reset}`, a => { rl.close(); resolve(a.trim()); });
-  });
+  const ans = ask
+    ? (await ask(`${c.yellow}Save/run anyway? [y/N] ${c.reset}`, 'n')).trim()
+    : 'n';
   if (!/^y/i.test(ans)) {
     console.log(`${c.yellow}Aborted. Tip: aeo-platform init --queries-only to regenerate.${c.reset}`);
     if (onAbort) onAbort(); else process.exit(0);
@@ -514,6 +516,7 @@ async function runValidationWithRecovery({
     primary, secondary, validationCache,
     nonInteractive, force, strictValidation,
     returnBlockersInsteadOfAbort: true,
+    ask,
   });
 
   const info = v.informationalIssues || [];
@@ -602,6 +605,7 @@ async function runValidationWithRecovery({
     primary, secondary, validationCache: v.updatedCache || validationCache,
     nonInteractive, force: true /* substitutes are pre-validated */,
     strictValidation, returnBlockersInsteadOfAbort: true,
+    ask,
   });
 
   return { v: v2, queries: recover.newQueries, recoveryFailed: false };
@@ -652,12 +656,15 @@ function makePipelineReporter(spinner) {
 async function cmdInit(opts = {}) {
   const nonInteractive = opts.yes === true;
 
-  const { createInterface } = await import('node:readline');
-  const rl = nonInteractive ? null : createInterface({ input: process.stdin, output: process.stdout });
-  const ask = nonInteractive
-    ? async (_q, def = '') => def
-    : (q) => new Promise(resolve => rl.question(q, resolve));
-  const closeRl = () => rl && rl.close();
+  // The shared prompter owns process.stdin / readline lifecycle for the whole
+  // command. The top-level dispatcher creates it and passes it in; tests can
+  // inject a custom one. Falling back to a local createPrompter keeps direct
+  // calls to cmdInit() working without the dispatcher.
+  if (!opts.prompter) {
+    const { createPrompter } = await import('../lib/util/prompt.js');
+    opts.prompter = createPrompter({ nonInteractive });
+  }
+  const ask = opts.prompter.ask;
 
   console.log(`\n${c.bold}aeo-platform — init${opts.queriesOnly ? ' --queries-only' : ''}${c.reset}\n`);
 
@@ -665,14 +672,12 @@ async function cmdInit(opts = {}) {
   if (opts.queriesOnly) {
     if (!existsSync(CONFIG_FILE)) {
       console.error(`${c.red}No ${CONFIG_FILE} found. Run: aeo-platform init${c.reset}`);
-      closeRl();
       process.exit(1);
     }
     const existing = JSON.parse(await readFile(CONFIG_FILE, 'utf-8'));
     const { brand, domain: existingDomain, providers: existingProviders } = existing;
     if (!brand || !existingDomain) {
       console.error(`${c.red}Config is missing brand or domain — run aeo-platform init first${c.reset}`);
-      closeRl();
       process.exit(1);
     }
 
@@ -690,7 +695,6 @@ async function cmdInit(opts = {}) {
     const { primary, validator } = await buildResearchProviders(existingKeyMap);
     if (!primary) {
       console.error(`${c.red}No API key found. Ensure at least one provider key is in the environment.${c.reset}`);
-      closeRl();
       process.exit(1);
     }
 
@@ -704,7 +708,6 @@ async function cmdInit(opts = {}) {
       site = parseSiteContent(html);
     } catch (err) {
       console.error(`${c.red}Failed to fetch site: ${errMsg(err)}${c.reset}`);
-      closeRl();
       process.exit(1);
     }
 
@@ -746,13 +749,11 @@ async function cmdInit(opts = {}) {
       }
     } catch (err) {
       console.error(`${c.red}Research failed: ${errMsg(err)}${c.reset}`);
-      closeRl();
       process.exit(1);
     }
 
     if (newQueries.length !== 3) {
       console.log(`${c.yellow}Aborted — no queries saved.${c.reset}`);
-      closeRl();
       return;
     }
 
@@ -767,7 +768,8 @@ async function cmdInit(opts = {}) {
       nonInteractive,
       force: opts.force,
       strictValidation: opts.strictValidation,
-      onAbort: () => { closeRl(); process.exit(nonInteractive ? 1 : 0); },
+      onAbort: () => { process.exit(nonInteractive ? 1 : 0); },
+      ask,
     });
 
     // v0.7 — basket versioning. Decide additive vs replace mode.
@@ -780,7 +782,6 @@ async function cmdInit(opts = {}) {
     let mode = 'replace'; // default before flag/prompt logic
     if (opts.addQueries && opts.replaceQueries) {
       console.error(`${c.red}--add-queries and --replace-queries are mutually exclusive${c.reset}`);
-      closeRl();
       process.exit(1);
     } else if (opts.addQueries) {
       mode = 'add';
@@ -793,7 +794,6 @@ async function cmdInit(opts = {}) {
       )).trim().toLowerCase();
       if (/^c/.test(ans)) {
         console.log('Aborted.');
-        closeRl();
         return;
       }
       mode = /^r/.test(ans) ? 'replace' : 'add';
@@ -833,7 +833,6 @@ async function cmdInit(opts = {}) {
     }
     finalQueries.forEach((q, i) => console.log(`  Q${i + 1}: ${q}`));
     console.log(`\nNext: ${c.cyan}aeo-platform run${c.reset}\n`);
-    closeRl();
     return;
   }
 
@@ -855,25 +854,25 @@ async function cmdInit(opts = {}) {
       console.log(`${c.yellow}${CONFIG_FILE} exists — overwriting (--yes mode)${c.reset}`);
     } else {
       const ans = (await ask(`${c.yellow}${CONFIG_FILE} already exists. Overwrite? [y/N] ${c.reset}`, 'n')).trim();
-      if (!/^y/i.test(ans)) { closeRl(); console.log('Aborted.'); return; }
+      if (!/^y/i.test(ans)) { console.log('Aborted.'); return; }
     }
   }
 
   // Step 1 — brand + domain
   const brand = (opts.brand || (await ask(`Brand name (e.g. webappski): `, ''))).trim();
-  if (!brand) { console.error(`${c.red}Brand is required${c.reset}`); closeRl(); process.exit(1); }
+  if (!brand) { console.error(`${c.red}Brand is required${c.reset}`); process.exit(1); }
 
   // P2.2: short brand warning
   if (brand.length <= 3) {
     console.log(`${c.yellow}⚠ Brand "${brand}" is very short. Mention detection may produce false positives (e.g. "AI" matches every "ai" word in answers).${c.reset}`);
     if (!nonInteractive) {
       const cont = (await ask(`Continue anyway? [y/N] `, 'n')).trim();
-      if (!/^y/i.test(cont)) { closeRl(); process.exit(0); }
+      if (!/^y/i.test(cont)) { process.exit(0); }
     }
   }
 
   const domainRaw = (opts.domain || (await ask(`Domain (e.g. webappski.com, or full URL): `, ''))).trim();
-  if (!domainRaw) { console.error(`${c.red}Domain is required${c.reset}`); closeRl(); process.exit(1); }
+  if (!domainRaw) { console.error(`${c.red}Domain is required${c.reset}`); process.exit(1); }
 
   const { normalizeUrl, extractDomain, fetchSite, parseSiteContent, detectSiteIssues, inferCategory, detectAudience } = await import('../lib/init/fetch-site.js');
   const fullUrl = normalizeUrl(domainRaw);
@@ -1013,7 +1012,6 @@ async function cmdInit(opts = {}) {
     console.log(`  export OPENAI_API_KEY=sk-proj-...`);
     console.log(`  export GEMINI_API_KEY=AIzaSy...`);
     console.log(`Then: source ~/.zshrc && aeo-platform init\n`);
-    closeRl();
     process.exit(1);
   }
 
@@ -1047,7 +1045,6 @@ async function cmdInit(opts = {}) {
     const list = String(opts.keywords).split(',').map(s => s.trim()).filter(Boolean);
     if (list.length !== 3) {
       console.error(`${c.red}--keywords requires exactly 3 comma-separated queries (got ${list.length})${c.reset}`);
-      closeRl();
       process.exit(1);
     }
     queries = list;
@@ -1264,7 +1261,6 @@ async function cmdInit(opts = {}) {
             }
             if (nonInteractive) {
               console.error(`${c.red}Non-interactive mode — cannot prompt for manual input. Aborting.${c.reset}`);
-              closeRl();
               process.exit(1);
             }
             console.log(`${c.dim}  Falling back to manual input.${c.reset}`);
@@ -1276,7 +1272,6 @@ async function cmdInit(opts = {}) {
           console.log(`${c.yellow}  Auto-suggest failed: ${errMsg(err)}${c.reset}`);
           if (nonInteractive) {
             console.error(`${c.red}Cannot fall back to manual in non-interactive mode. Aborting.${c.reset}`);
-            closeRl();
             process.exit(1);
           }
           console.log(`${c.dim}  Falling back to manual input.${c.reset}`);
@@ -1289,7 +1284,6 @@ async function cmdInit(opts = {}) {
   if (queries.length === 0) {
     if (nonInteractive) {
       console.error(`${c.red}No queries — non-interactive --manual mode requires pre-configured queries (not yet supported via flags). Use --auto or drop --yes.${c.reset}`);
-      closeRl();
       process.exit(1);
     }
     console.log(`\n${c.bold}Enter 3 unbranded test queries:${c.reset}`);
@@ -1303,7 +1297,6 @@ async function cmdInit(opts = {}) {
       if (q) queries.push(q);
     }
   }
-  closeRl();
 
   // P0.2: final queries guard
   if (queries.length !== 3) {
@@ -1334,7 +1327,6 @@ async function cmdInit(opts = {}) {
   if (recovery.recoveryFailed) {
     // Panel already printed. Exit with code 1 — validation failed, user has
     // a copy-paste command to retry.
-    closeRl();
     process.exit(1);
   }
   queries = recovery.queries;
@@ -1415,6 +1407,16 @@ async function cmdRun(options = {}) {
     console.log = () => {};
     process.stdout.write = () => true;
   }
+
+  // Shared prompter for the only interactive prompt in this command — the
+  // --depth=auto stale-baseline confirmation. Falls back to a fresh prompter
+  // when cmdRun is called directly (e.g. tests) without the dispatcher
+  // wiring one in.
+  if (!options.prompter) {
+    const { createPrompter } = await import('../lib/util/prompt.js');
+    options.prompter = createPrompter({});
+  }
+  const ask = options.prompter.ask;
 
   // Load config
   if (!existsSync(CONFIG_FILE)) {
@@ -1556,6 +1558,7 @@ async function cmdRun(options = {}) {
       nonInteractive: true,       // run is always "CI-like" — no interactive prompt during API spend
       force: options.force,
       strictValidation: options.strictValidation,
+      ask,
     });
   }
 
@@ -3286,6 +3289,13 @@ const command = positionals[0];
 // turns the raw stack into an actionable panel before exiting with code 1.
 // Exceptions: process.exit() from inside a command won't trigger this catch
 // (that's intentional — the command already handled its own exit).
+// Single prompter for every interactive prompt across init/run. Owned by
+// the dispatcher so the two commands don't create competing readlines on
+// the same stdin. close() registered via process.on('exit') inside the
+// module — no manual lifecycle handling needed below.
+const { createPrompter } = await import('../lib/util/prompt.js');
+const prompter = createPrompter({ nonInteractive: values.yes });
+
 try {
   if (values.help || (!command && !values.version)) {
     console.log(HELP);
@@ -3299,6 +3309,7 @@ try {
       queriesOnly: values['queries-only'],
       addQueries: values['add-queries'],
       replaceQueries: values['replace-queries'],
+      prompter,
     });
   } else if (command === 'run') {
     await cmdRun({
@@ -3311,6 +3322,7 @@ try {
       replay: values.replay,
       replayFrom: values['replay-from'],
       // End replay
+      prompter,
     });
   } else if (command === 'run-manual') {
     await cmdRunManual(process.argv.slice(3));
