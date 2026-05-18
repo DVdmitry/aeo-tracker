@@ -883,9 +883,16 @@ async function cmdInit(opts = {}) {
       console.error(`${c.red}--yes requires --brand and --domain${c.reset}`);
       process.exit(1);
     }
-    if (!opts.auto && !opts.manual) {
-      console.error(`${c.red}--yes requires either --auto or --manual${c.reset}`);
+    if (!opts.auto && !opts.manual && !opts.keywords) {
+      console.error(`${c.red}--yes requires --auto, --manual, or --keywords="q1,q2,q3"${c.reset}`);
+      console.error(`${c.dim}  --auto       Let the LLM pipeline brainstorm and validate queries${c.reset}`);
+      console.error(`${c.dim}  --manual     Type queries interactively (skipped in --yes; provide --keywords instead)${c.reset}`);
+      console.error(`${c.dim}  --keywords   Supply your own 3 queries, skip brainstorm (zero LLM cost)${c.reset}`);
       process.exit(1);
+    }
+    if (process.env.AEO_TRACKER_DRY_RUN === '1') {
+      console.log('precondition-ok');
+      process.exit(0);
     }
   }
 
@@ -1062,7 +1069,7 @@ async function cmdInit(opts = {}) {
   // `aeo-tracker run` via lib/providers/discover.js (HTTP fetch of /v1/models
   // per provider + regex sort). Init just seeds `.aeo-tracker.json` with
   // FALLBACK defaults — used only if discovery fails (provider down / network).
-  console.log(`\n${c.dim}Models will be discovered dynamically at each \`run\` (HTTP fetch of /v1/models per provider). Configured providers: ${Object.keys(providerKey).map(p => PROVIDER_LABELS[p]).join(', ')}${c.reset}`);
+  console.log(`\n${c.dim}Models will be discovered dynamically at each \`run\` (HTTP fetch of /v1/models per provider).${c.reset}`);
 
   /** @type {Object<string,{model:string,classifyModel:string,env:string}>} */
   const selectedProviders = {};
@@ -3006,6 +3013,21 @@ async function cmdRunManual(argv) {
   const providerLabel = PROVIDERS[providerName].label;
   const modelUsed = providerCfg.model || 'manual';
 
+  // Pre-flight: every query needs its own paste file. Refuse partial runs —
+  // silent skip-per-file produces confusing partial _summary.json that
+  // contaminates the weekly trend. Hard-fail BEFORE any heavy work
+  // (buildExtractionProviders, mkdir, etc.) so the operator gets an instant
+  // diagnostic instead of waiting for an unrelated API-key error.
+  const expectedFiles = queries.map((_, i) => join(fromDir, `q${i + 1}.txt`));
+  const missingFiles = expectedFiles.filter(f => !existsSync(f));
+  if (missingFiles.length > 0) {
+    console.error(`\n${c.red}${SYM.err} Missing query response files in ${fromDir}:${c.reset}`);
+    missingFiles.forEach(f => console.error(`  ${c.red}✗${c.reset} ${f}`));
+    console.error(`\n${c.dim}Each query needs its own paste file (q1.txt for query 1, q2.txt for query 2, …).${c.reset}`);
+    console.error(`${c.dim}Paste the AI engine's response into the missing file(s) and re-run.${c.reset}`);
+    process.exit(1);
+  }
+
   const date = new Date().toISOString().split('T')[0];
   const responseDir = join('aeo-responses', date);
   await mkdir(responseDir, { recursive: true });
@@ -3027,11 +3049,6 @@ async function cmdRunManual(argv) {
     const query = queries[qi];
     const queryFile = join(fromDir, `q${qi + 1}.txt`);
     const tag = `Q${qi + 1}/${providerName}`;
-
-    if (!existsSync(queryFile)) {
-      console.log(`  ${c.dim}SKIP${c.reset} ${tag} (no ${queryFile})`);
-      continue;
-    }
 
     const text = await readFile(queryFile, 'utf-8');
     const citations = extractUrls(text);
@@ -3247,9 +3264,31 @@ async function cmdCrawlStats(args = {}) {
     process.exit(1);
   }
 
-  const { parseAccessLog, summariseBotCrawls } = await import('../lib/report/log-parser.js');
-  const content = await readFile(args.logFile, 'utf-8');
-  const entries = parseAccessLog(content);
+  // Stream-parse line-by-line so 500MB+ access logs don't OOM the Node heap.
+  // Memory is O(1) regardless of file size. The 100MB threshold is the
+  // typical-vs-large boundary — surface a "this may take a while" line so
+  // the operator knows it's not hung.
+  const { parseLogLine, summariseBotCrawls } = await import('../lib/report/log-parser.js');
+  const { createReadStream, statSync } = await import('node:fs');
+  const { createInterface: createReadline } = await import('node:readline');
+
+  const size = statSync(args.logFile).size;
+  if (size > 100 * 1024 * 1024) {
+    console.log(`${c.dim}  Streaming ${Math.round(size / 1024 / 1024)}MB log — this may take 30-60s${c.reset}`);
+  }
+
+  const entries = [];
+  try {
+    const stream = createReadStream(args.logFile, { encoding: 'utf-8' });
+    const rl = createReadline({ input: stream, crlfDelay: Infinity });
+    for await (const line of rl) {
+      const entry = parseLogLine(line);
+      if (entry) entries.push(entry);
+    }
+  } catch (err) {
+    console.error(`${c.red}${SYM.err} Failed to stream-read ${args.logFile}: ${errMsg(err)}${c.reset}`);
+    process.exit(1);
+  }
   const stats = summariseBotCrawls(entries);
 
   if (stats.totalBotHits === 0) {
@@ -3317,6 +3356,17 @@ async function cmdDiff(argv) {
     }
     dateA = allDates[allDates.length - 2];
     dateB = allDates[allDates.length - 1];
+  }
+
+  // Pre-check: caller-supplied dates (from --since or positional A B) may not
+  // exist in the snapshots directory. Raw `No _summary.json for X` errors are
+  // unhelpful; list available dates so the operator can pick one.
+  const missingDates = [dateA, dateB].filter(d => !allDates.includes(d));
+  if (missingDates.length > 0) {
+    console.error(`${c.red}${SYM.err} No run found for: ${missingDates.join(', ')}${c.reset}`);
+    console.error(`${c.dim}Available dates: ${allDates.join(', ')}${c.reset}`);
+    console.error(`${c.dim}Use one of those, or \`aeo-platform diff --last 2\` for the most recent pair.${c.reset}`);
+    process.exit(1);
   }
 
   const load = async (d) => {

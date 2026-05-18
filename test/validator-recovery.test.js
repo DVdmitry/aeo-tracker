@@ -182,8 +182,15 @@ test('formatRecoveryPanel: includes --force escape hatch and --category hint', (
   });
   const text = lines.join('\n');
   assert.match(text, /--force/);
-  assert.match(text, /not recommended/);
+  // 1.0.3: `--force` was demoted from option 2 ("not recommended") to last
+  // option with a stronger warning. Validate the new copy + ordering.
+  assert.match(text, /last resort/);
+  assert.match(text, /degrades trend data/);
   assert.match(text, /--category=/);
+  // Category hint promoted to option 2; --force pushed to option 3.
+  const categoryIdx = text.indexOf('--category=');
+  const forceIdx = text.indexOf('--force');
+  assert.ok(categoryIdx < forceIdx, '--category should appear before --force after 1.0.3 demotion');
 });
 
 test('formatRecoveryPanel: handles static/llm blockers (different reason shape)', () => {

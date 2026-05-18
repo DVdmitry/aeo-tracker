@@ -2,6 +2,41 @@
 
 All notable changes to `aeo-platform` (formerly `@webappski/aeo-tracker`).
 
+## [1.0.3] — 2026-05-18
+
+**Trust-restoration patch.** Fixes a systemic class of bug where the CLI's error panels suggested commands that the CLI's own precondition checks would reject. Plus four smaller fixes flagged during the same director-level audit.
+
+### Fixed
+
+- **`--yes --keywords="..."` now works without `--auto`/`--manual`.** Previously the precondition at `cmdInit` rejected `--keywords` despite the downstream code handling it as a valid third mode. The `validator-recovery` panel and the `research-failure` panel both suggested commands using `--keywords` — those suggestions now run as intended.
+- **`research-failure-panel.js` env-unset fallback** suggested `--auto`, which would re-trigger the same provider failure that prompted the panel. Now suggests `--manual` so the operator can actually recover.
+- **`unexpected-error-panel.js` config-issue panel** offered only `--auto` as the regenerate-config path. Now lists both `--auto` (LLM brainstorm) and `--manual --keywords="q1,q2,q3"` (zero LLM cost) as parallel options.
+- **`validator-recovery.js` `--force` path** moved from option 2 to option 3 with a visible yellow warning explaining trend-data degradation. The `--category` hint promoted to option 2 since it is a real solution, not an escape hatch.
+- **`Blocked:` list deduplication.** A single query that tripped both the LLM industry-fit check and the commercial-only check no longer appears twice in the rendered output. The headline count matches the rendered list.
+- **`Configured providers:` line printed twice** on consecutive output lines during `init`. The duplicate concatenation has been removed; only the standalone line remains.
+- **`run-manual` silent partial runs.** `aeo-platform run-manual perplexity --from-dir ./responses` no longer silently skips missing `qN.txt` files. A pre-flight check lists missing files and exits before any work begins — including before the OpenAI+Gemini extractor key check, so operators get an instant diagnostic.
+- **`diff --since=DATE` raw error when DATE not in snapshots.** Now prints the available dates inline (`Available dates: 2026-05-04, 2026-05-11, …`) so the operator does not have to `ls aeo-responses/` separately.
+- **`crawl-stats` memory exhaustion on large access logs.** Switched from `readFile` (entire file into heap) to `createReadStream` + `readline` for line-by-line streaming. Memory is now O(1) regardless of log size. A 500MB log runs to completion on a default Node heap. Files over 100MB get a `Streaming Nmb log — this may take 30-60s` hint.
+
+### Added
+
+- **Static-grep invariant test** (`test/suggested-commands-resolvable.test.js`). Scans every `aeo-platform init --yes` string literal in `lib/errors/` and `lib/init/` and fails CI if any one is missing a mode flag (`--auto`, `--manual`, or `--keywords`). Glob-based — future panels are auto-covered. Catches the regression class that produced the 1.0.2 trust failure.
+- **Three regression tests** in `test/cli-smoke.test.js`: `--yes --keywords` precondition acceptance, error-message-lists-all-three-modes, and `run-manual` empty-directory hard-fail.
+- **Dedup test** for `formatRecoveryPanel` (`test/validator-recovery-dedup.test.js`) — 4 cases covering same-behaviour collapse, specificity tiebreak, message-loss-is-acceptable, and distinct-query preservation.
+- **Internal `AEO_TRACKER_DRY_RUN=1` env flag** short-circuits `cmdInit` right after the precondition gate. Used by the regression test suite to keep CLI smoke tests deterministic (no DNS, no filesystem touches). Not documented in `--help`.
+
+### Internal
+
+- New `release-flow` workflow in `.claude/skills/release-flow.md` — every non-trivial release now passes two independent architect-review gates (plan review + implementation review) before shipping. This release was the first to follow it: plan went through 3 revisions before approval.
+- Maintainer-side TODOs and audit findings now live in `docs/roadmap.md` and `docs/plans/<version>-<slug>.md`. GitHub Issues remain reserved for user reports.
+
+### Known limitations
+
+- `[ux] Validator output reads as fatal crash` — full visual redesign (red ✗ → tilde, "Cannot auto-recover" → "Almost there", letter-keyed alternatives, cargo-style colour palette) deferred to **1.0.4** per the 3-persona review documented in `docs/roadmap.md`.
+- `[enhancement] Auto-substitute in --yes mode` — deferred to **1.0.4**, depends on the UX redesign landing first.
+- `[ux] Placeholder-domain hint` (detecting copy-paste of `YOURDOMAIN.COM` from the README) — deferred to **1.0.4**.
+- Corporate-proxy `HTTPS_PROXY` support — on the **1.0.5+ roadmap** (requires undici `ProxyAgent` wiring).
+
 ## [1.0.2] — 2026-05-18
 
 **Provider resilience layer + cross-platform stdin/readline fix.** Two independent fix tracks bundled into one release: (1) the «readline was closed» crash during `init --auto --strict-validation` is fully eliminated by centralising stdin/readline ownership in a single module, and (2) every provider call now goes through a TPM-aware retry/scheduler layer that survives bursty 429 / overload / network errors instead of failing the whole run.
