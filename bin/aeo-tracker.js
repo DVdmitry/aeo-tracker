@@ -697,12 +697,13 @@ async function cmdInit(opts = {}) {
   const nonInteractive = opts.yes === true;
 
   // The shared prompter owns process.stdin / readline lifecycle for the whole
-  // command. The top-level dispatcher creates it and passes it in; tests can
-  // inject a custom one. Falling back to a local createPrompter keeps direct
-  // calls to cmdInit() working without the dispatcher.
+  // command. The top-level dispatcher creates it once and threads it into
+  // every command — a second createPrompter() in here would mean two readline
+  // interfaces racing on the same stdin (the exact regression that 1.0.2 fixed).
+  // Direct callers (tests, programmatic embedding) must inject their own
+  // prompter — see test/prompt-lifecycle.test.js for the contract.
   if (!opts.prompter) {
-    const { createPrompter } = await import('../lib/util/prompt.js');
-    opts.prompter = createPrompter({ nonInteractive });
+    throw new Error('cmdInit: opts.prompter is required (the dispatcher in bin/aeo-tracker.js wires this; tests must pass createPrompter({...}))');
   }
   const ask = opts.prompter.ask;
 
@@ -1464,12 +1465,12 @@ async function cmdRun(options = {}) {
   }
 
   // Shared prompter for the only interactive prompt in this command — the
-  // --depth=auto stale-baseline confirmation. Falls back to a fresh prompter
-  // when cmdRun is called directly (e.g. tests) without the dispatcher
-  // wiring one in.
+  // --depth=auto stale-baseline confirmation. The top-level dispatcher always
+  // creates this; a fallback createPrompter() here would be a second readline
+  // on the same stdin (the exact regression that 1.0.2 fixed). Direct callers
+  // (tests, programmatic embedding) must inject their own prompter.
   if (!options.prompter) {
-    const { createPrompter } = await import('../lib/util/prompt.js');
-    options.prompter = createPrompter({});
+    throw new Error('cmdRun: options.prompter is required (the dispatcher in bin/aeo-tracker.js wires this; tests must pass createPrompter({...}))');
   }
   const ask = options.prompter.ask;
 
