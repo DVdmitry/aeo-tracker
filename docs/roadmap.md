@@ -189,9 +189,13 @@ Reviewer Anna's secondary observation: when a user copy-pastes the README quicks
 
 ## Done
 
-### 1.0.4 — published 2026-05-18
+### 1.0.5 — published 2026-05-18
 
-- `[bug · P0]` Pool top-up — when initial pool validation leaves <3 RETRIEVAL queries (cells D pool=1+unclean and F pool=2+unclean), tool autonomously generates missing queries via dedicated LLM call. Caught by newly-created `cli-walkthrough` skill before 1.0.4 reached npm.
+- `[bug · P0]` Pool top-up — when initial pool validation leaves <3 RETRIEVAL queries (cells D pool=1+unclean and F pool=2+unclean), tool autonomously generates missing queries via dedicated LLM call. Caught by newly-created `cli-walkthrough` skill before 1.0.4-internal reached npm; shipped as 1.0.5.
+- `[skill]` New `cli-walkthrough` (Step 4c of `/release-flow`) — exhaustive per-command simulation, catches the regression class that hypothesis-driven architect review misses.
+- `[skill]` `/release-flow` Step 3b — mandatory `package.json` version bump in the same commit as code change.
+
+### 1.0.4 — never published (superseded by 1.0.5)
 - `[bug · P0]` `(validated)` tag in Alternatives pool meant only industry-fit passed — pool now enriched from `v.updatedCache` at panel call-site and filtered through commercial-only (`RETRIEVAL`) before rendering
 - `[bug · P0]` Recovery filler templates switched from brand-archetype (`${brand} vs alternatives` etc.) to category-archetype (`best ${category} 2026` etc.), domain-agnostic, with ≤4-word length-guard to reject long marketing-sentence categories from `inferCategory()`
 - `[bug · architectural]` Recovery panel option 3 = drop `--yes` and switch to interactive `--manual` (always-works escape hatch for brands too new for LLM context); `--force` demoted to option 4

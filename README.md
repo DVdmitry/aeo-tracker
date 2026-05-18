@@ -492,9 +492,9 @@ Yes — create a separate working directory for each brand with its own `.aeo-tr
 
 Weekly. Daily adds noise without signal (AI models don't update fast enough to make daily deltas meaningful). Monthly loses meaningful trend resolution.
 
-### What's new in 1.0.4?
+### What's new in 1.0.5?
 
-Validator-honesty hotfix on top of 1.0.3 trust-restoration work. The `(validated)` tag in `init` now means BOTH validator stages passed (category-validation + industry-fit / commercial-only) — earlier versions tagged queries as `(validated)` after one stage only, and the recovery panel then suggested commands that the validator re-blocked on the next run. Plus a `--manual` interactive escape hatch in the recovery panel for new brands the LLM has no context for. Full notes in [CHANGELOG.md](./CHANGELOG.md).
+Validator-honesty release (1.0.4 work + a pool top-up follow-up that landed in 1.0.5; 1.0.4 was never published to npm). The `(validated)` tag in `init` now means BOTH validator stages passed (category-validation + industry-fit / commercial-only) — earlier versions tagged queries as `(validated)` after one stage only, and the recovery panel then suggested commands that the validator re-blocked on the next run. A `--manual` interactive escape hatch was added to the recovery panel for new brands the LLM has no context for. Plus self-sufficient pool top-up: when initial pool validation produces fewer than 3 RETRIEVAL-passing alternatives, the tool autonomously generates the missing queries via a dedicated LLM call instead of asking the operator to retry — so the recovery panel never suggests an invalid `--keywords` command. Full notes in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Limitations
 
@@ -716,7 +716,7 @@ MIT — do whatever you want with it.
       "applicationCategory": "DeveloperApplication",
       "applicationSubCategory": "Answer Engine Optimization, Generative Engine Optimization, Brand Visibility Monitoring",
       "operatingSystem": "macOS, Linux, Windows",
-      "softwareVersion": "1.0.4",
+      "softwareVersion": "1.0.5",
       "datePublished": "2026-05-18",
       "license": "https://opensource.org/licenses/MIT",
       "downloadUrl": "https://www.npmjs.com/package/aeo-platform",
