@@ -1,0 +1,16 @@
+{
+  "id": "msg_fixture_q2_anthropic",
+  "model": "claude-sonnet-4-7",
+  "content": [
+    {
+      "type": "text",
+      "text": "TestBrand (testbrand.com) is frequently cited as a top alternative, ahead of CompetitorA. Reviewers note its developer-friendly approach."
+    },
+    {
+      "type": "web_search_tool_result",
+      "content": [
+        { "url": "https://g2.com/test" }
+      ]
+    }
+  ]
+}

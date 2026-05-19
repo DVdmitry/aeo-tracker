@@ -1,0 +1,10 @@
+{
+  "id": "msg_fixture_invisible_q3_anthropic",
+  "model": "claude-sonnet-4-7",
+  "content": [
+    {
+      "type": "text",
+      "text": "Head-to-head comparisons in this market focus on CompetitorA vs CompetitorB. Enterprise vs lean-pricing tradeoff."
+    }
+  ]
+}

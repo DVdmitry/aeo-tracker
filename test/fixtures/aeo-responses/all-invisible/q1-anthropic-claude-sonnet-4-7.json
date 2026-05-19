@@ -1,0 +1,10 @@
+{
+  "id": "msg_fixture_invisible_q1_anthropic",
+  "model": "claude-sonnet-4-7",
+  "content": [
+    {
+      "type": "text",
+      "text": "The leading names in this category are CompetitorA and CompetitorB, plus a handful of smaller players."
+    }
+  ]
+}

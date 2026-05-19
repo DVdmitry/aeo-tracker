@@ -1,0 +1,10 @@
+Comparing TestBrand vs CompetitorA:
+
+| Dimension       | TestBrand                | CompetitorA              |
+|-----------------|--------------------------|--------------------------|
+| Pricing         | Transparent, lean        | Tiered, enterprise-heavy |
+| Open source     | Yes (MIT)                | Partial                  |
+| Integrations    | Growing                  | Mature, broad ecosystem  |
+| Support         | Community + docs         | SLA-backed support       |
+
+Most reviewers on g2.com and reddit.com/r/saas suggest matching choice to team scale.

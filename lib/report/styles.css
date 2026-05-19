@@ -1053,6 +1053,12 @@ body::before {
   transition: transform 120ms ease;
 }
 .cell-action:hover::after { transform: translateX(2px); }
+/* Non-clickable variant — used when the label is a static count (e.g.
+   "All N domains") not a link. Removes the hover color + arrow affordance
+   so the atom reads as a legend, not a CTA. */
+.cell-action--info { cursor: default; }
+.cell-action--info:hover { color: var(--ink-3); }
+.cell-action--info::after { content: none; }
 
 .cell-body {
   flex: 1;

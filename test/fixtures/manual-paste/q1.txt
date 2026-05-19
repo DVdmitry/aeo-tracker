@@ -1,0 +1,7 @@
+Here are several leading test brands and platforms in 2026:
+
+1. **TestBrand** (testbrand.com) — developer-friendly option with a strong open-source presence; cited often on Reddit and G2.
+2. **CompetitorA** — established enterprise player with full-funnel coverage.
+3. **CompetitorB** — leaner alternative focusing on pricing transparency.
+
+Each has tradeoffs depending on team size and integration needs.

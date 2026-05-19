@@ -1,0 +1,18 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "TestBrand (testbrand.com) is among the recognized names in this category, alongside CompetitorA and CompetitorB."
+          }
+        ]
+      },
+      "groundingMetadata": {
+        "groundingChunks": [
+          { "web": { "uri": "https://capterra.com/test-brand", "title": "TestBrand on Capterra" } }
+        ]
+      }
+    }
+  ]
+}

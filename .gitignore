@@ -26,3 +26,9 @@ IDENTITY_TASK_LIST.md
 
 # Agent crash recovery log (webappski-ops orchestration)
 .implementor.log
+
+# E2E test fixtures — re-include despite aeo-responses/ and *.log rules above
+!test/fixtures/aeo-responses/
+!test/fixtures/aeo-responses/**
+!test/fixtures/access-logs/
+!test/fixtures/access-logs/*.log

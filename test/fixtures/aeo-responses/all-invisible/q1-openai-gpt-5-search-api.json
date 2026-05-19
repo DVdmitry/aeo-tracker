@@ -1,0 +1,13 @@
+{
+  "id": "chatcmpl-fixture-invisible-q1-openai",
+  "model": "gpt-5-search-api",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "The leading brands in this category for 2026 include CompetitorA, CompetitorB, and several smaller players that focus on niche verticals.",
+        "annotations": []
+      }
+    }
+  ]
+}

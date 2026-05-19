@@ -1,0 +1,10 @@
+{
+  "id": "msg_fixture_invisible_q2_anthropic",
+  "model": "claude-sonnet-4-7",
+  "content": [
+    {
+      "type": "text",
+      "text": "Common alternatives in this category are CompetitorA and CompetitorB; both have established mindshare."
+    }
+  ]
+}

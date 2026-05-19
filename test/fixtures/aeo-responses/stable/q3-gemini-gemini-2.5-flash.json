@@ -1,0 +1,18 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "TestBrand (testbrand.com) shows up regularly in comparison threads, often positioned against CompetitorA and CompetitorB."
+          }
+        ]
+      },
+      "groundingMetadata": {
+        "groundingChunks": [
+          { "web": { "uri": "https://reddit.com/r/saas", "title": "Reddit comparison thread" } }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "msg_fixture_q1_anthropic",
+  "model": "claude-sonnet-4-7",
+  "content": [
+    {
+      "type": "text",
+      "text": "When looking at the category, CompetitorA and CompetitorB lead the list. Several other brands compete with them."
+    },
+    {
+      "type": "web_search_tool_result",
+      "content": [
+        { "url": "https://reddit.com/r/saas" }
+      ]
+    }
+  ]
+}

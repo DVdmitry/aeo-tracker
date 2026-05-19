@@ -1,0 +1,10 @@
+{
+  "id": "msg_fixture_q3_anthropic",
+  "model": "claude-sonnet-4-7",
+  "content": [
+    {
+      "type": "text",
+      "text": "In comparisons CompetitorA is generally favored on enterprise features. CompetitorB has a leaner pricing tier."
+    }
+  ]
+}

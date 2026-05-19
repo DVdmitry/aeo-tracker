@@ -296,7 +296,15 @@ async function _tryReplay(qi, provider, srcDate) {
   const safeModel = sanitizeForFilename(provider.model);
   const replayPath = join('aeo-responses', srcDate, `q${qi}-${provider.name}-${safeModel}.json`);
   if (!existsSync(replayPath)) return null;
-  const raw = JSON.parse(await readFile(replayPath, 'utf-8'));
+  // Malformed cache → treat as miss; caller falls back to live call (or fails
+  // through replaySrcDate gate). Prevents an uncaught SyntaxError from crashing
+  // the run when a fixture file is half-written / hand-edited.
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(replayPath, 'utf-8'));
+  } catch {
+    return null;
+  }
   const { text, citations } = _extractFromRaw(provider.name, raw);
   return { text, citations, raw };
 }

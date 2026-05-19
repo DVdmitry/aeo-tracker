@@ -1,0 +1,13 @@
+{
+  "id": "chatcmpl-fixture-invisible-q2-openai",
+  "model": "gpt-5-search-api",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "Top alternatives in this space include CompetitorA, CompetitorB, and several niche competitors.",
+        "annotations": []
+      }
+    }
+  ]
+}
