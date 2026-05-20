@@ -1713,65 +1713,118 @@ async function cmdRun(options = {}) {
     }
   }
 
-  // Discover current search-capable models for each configured provider.
-  // Parallel HTTP fetch of /v1/models (~1-2s total with 10s per-provider
-  // timeout). Fallback chain on failure:
-  //   - 401/403 (authError) → skip provider entirely (same bad key for run
-  //                          would fail too)
-  //   - other failure → fallback to cfg.model from .aeo-tracker.json
-  //   - cfg.model also missing → skip with hint to re-init
-  console.log(`\n${c.dim}Discovering current models…${c.reset}`);
-  const discoveryResults = await Promise.all(
-    Object.entries(providerConfig || DEFAULT_CONFIG.providers).map(async ([name, cfg]) => {
-      try {
-        const envKey = cfg.env || `${name.toUpperCase()}_API_KEY`;
-        const apiKey = process.env[envKey];
-        if (!apiKey) return { name, cfg, skip: 'no-key', envKey };
-        const { models, authError } = await discoverModels(name, apiKey, cfg.baseURL);
-        return { name, cfg, apiKey, models, authError };
-      } catch (err) {
-        // Defensive per-task catch: ensures one crash doesn't break Promise.all.
-        return { name, cfg, skip: 'crash', err };
-      }
-    }),
-  );
+  // Resolve replay mode early — when active, we skip the live `/v1/models`
+  // discovery HTTP and build providers from `.aeo-tracker.json` cfg.model
+  // directly. Rationale: `--replay [--replay-from=DATE]` is a user-explicit
+  // contract ("use cached responses, don't hit live APIs"); discovery is a
+  // live API hit. Skipping it in replay mode keeps the offline contract
+  // coherent. The replay seam at line ~2026 (`_tryReplay`) is filename-keyed
+  // by `provider.model`, so the configured model name is all we need.
+  // See PITFALLS.md "2026-05-20 — Replay mode НЕ skip live model discovery".
+  let replaySrcDate = null;
+  if (options.replay) {
+    replaySrcDate = await _resolveReplaySource(options.replayFrom);
+    if (!replaySrcDate) {
+      console.error(`${c.red}--replay: no prior aeo-responses/YYYY-MM-DD folder found${c.reset}`);
+      process.exit(1);
+    }
+    console.log(`${c.yellow}  [replay] serving cached responses from aeo-responses/${replaySrcDate}/${c.reset}\n`);
+  }
 
   const activeProviders = [];
-  for (const r of discoveryResults) {
-    if (r.skip === 'no-key') {
-      console.log(`${c.dim}  skip ${r.name} — no ${r.envKey}${c.reset}`);
-      continue;
-    }
-    if (r.skip === 'crash') {
-      console.error(`  ${c.yellow}${SYM.warn}${c.reset} ${r.name} — discovery crashed: ${r.err?.message}. Skipping.${c.reset}`);
-      continue;
-    }
-    if (r.authError) {
-      console.error(`  ${c.red}${SYM.err}${c.reset} ${r.name} — invalid API key (HTTP 401/403). Skipping this provider.${c.reset}`);
-      continue;
-    }
-    // Discovery success → use discovered. Discovery soft-fail → fallback to cfg.model.
-    const finalModels = r.models ?? (r.cfg.model ? [r.cfg.model] : null);
-    if (!finalModels?.length) {
-      console.log(`${c.dim}  skip ${r.name} — discovery failed and no fallback (re-run: aeo-platform init)${c.reset}`);
-      continue;
-    }
-    const sourceLabel = r.models ? '' : ` ${c.dim}(fallback)${c.reset}`;
-    console.log(`  ${c.green}${SYM.ok}${c.reset} ${r.name}: ${finalModels.join(', ')}${sourceLabel}`);
-    for (const modelId of finalModels) {
-      // trainingModel = the no-search variant, used by `--depth=full`. null
-      // means the provider has no training-data mode (e.g. Perplexity).
-      const trainingModel = deriveTrainingModel(r.name, modelId);
+  if (replaySrcDate) {
+    // Replay mode: skip live `/v1/models` discovery — use cfg.model from
+    // .aeo-tracker.json verbatim. activeProviders shape must match the live
+    // branch below (used by `_tryReplay`, per-cell loop, scheduler).
+    // apiKey is still read from env so downstream extraction calls have a
+    // value to send; if the user has fake keys, extraction will 401 inside
+    // the per-cell try/catch → mention='error' → exit 3 (NOT exit 1).
+    console.log(`\n${c.dim}Replay mode: skipping live model discovery (using cfg.model from config).${c.reset}`);
+    for (const [name, cfg] of Object.entries(providerConfig || DEFAULT_CONFIG.providers)) {
+      const envKey = cfg.env || `${name.toUpperCase()}_API_KEY`;
+      const apiKey = process.env[envKey];
+      if (!apiKey) {
+        console.log(`${c.dim}  skip ${name} — no ${envKey}${c.reset}`);
+        continue;
+      }
+      const modelId = cfg.model;
+      if (!modelId) {
+        console.log(`${c.dim}  skip ${name} — no cfg.model in .aeo-tracker.json (re-run: aeo-platform init)${c.reset}`);
+        continue;
+      }
+      const trainingModel = deriveTrainingModel(name, modelId);
+      console.log(`  ${c.green}${SYM.ok}${c.reset} ${name}: ${modelId} ${c.dim}(replay)${c.reset}`);
       activeProviders.push({
-        name: r.name,
+        name,
         model: modelId,
         trainingModel,
-        classifyModel: r.cfg.classifyModel || MODEL_FALLBACK[r.name]?.classify,
-        mainOptions: MAIN_OPTIONS_BY_PROVIDER[r.name] || {},
-        colLabel: _modelColLabel(r.name, modelId),
-        apiKey: r.apiKey,
-        ...PROVIDERS[r.name],
+        classifyModel: cfg.classifyModel || MODEL_FALLBACK[name]?.classify,
+        mainOptions: MAIN_OPTIONS_BY_PROVIDER[name] || {},
+        colLabel: _modelColLabel(name, modelId),
+        apiKey,
+        ...PROVIDERS[name],
       });
+    }
+  } else {
+    // Live mode: discover current search-capable models for each configured
+    // provider. Parallel HTTP fetch of /v1/models (~1-2s total with 10s
+    // per-provider timeout). Fallback chain on failure:
+    //   - 401/403 (authError) → skip provider entirely (same bad key for run
+    //                          would fail too)
+    //   - other failure → fallback to cfg.model from .aeo-tracker.json
+    //   - cfg.model also missing → skip with hint to re-init
+    console.log(`\n${c.dim}Discovering current models…${c.reset}`);
+    const discoveryResults = await Promise.all(
+      Object.entries(providerConfig || DEFAULT_CONFIG.providers).map(async ([name, cfg]) => {
+        try {
+          const envKey = cfg.env || `${name.toUpperCase()}_API_KEY`;
+          const apiKey = process.env[envKey];
+          if (!apiKey) return { name, cfg, skip: 'no-key', envKey };
+          const { models, authError } = await discoverModels(name, apiKey, cfg.baseURL);
+          return { name, cfg, apiKey, models, authError };
+        } catch (err) {
+          // Defensive per-task catch: ensures one crash doesn't break Promise.all.
+          return { name, cfg, skip: 'crash', err };
+        }
+      }),
+    );
+
+    for (const r of discoveryResults) {
+      if (r.skip === 'no-key') {
+        console.log(`${c.dim}  skip ${r.name} — no ${r.envKey}${c.reset}`);
+        continue;
+      }
+      if (r.skip === 'crash') {
+        console.error(`  ${c.yellow}${SYM.warn}${c.reset} ${r.name} — discovery crashed: ${r.err?.message}. Skipping.${c.reset}`);
+        continue;
+      }
+      if (r.authError) {
+        console.error(`  ${c.red}${SYM.err}${c.reset} ${r.name} — invalid API key (HTTP 401/403). Skipping this provider.${c.reset}`);
+        continue;
+      }
+      // Discovery success → use discovered. Discovery soft-fail → fallback to cfg.model.
+      const finalModels = r.models ?? (r.cfg.model ? [r.cfg.model] : null);
+      if (!finalModels?.length) {
+        console.log(`${c.dim}  skip ${r.name} — discovery failed and no fallback (re-run: aeo-platform init)${c.reset}`);
+        continue;
+      }
+      const sourceLabel = r.models ? '' : ` ${c.dim}(fallback)${c.reset}`;
+      console.log(`  ${c.green}${SYM.ok}${c.reset} ${r.name}: ${finalModels.join(', ')}${sourceLabel}`);
+      for (const modelId of finalModels) {
+        // trainingModel = the no-search variant, used by `--depth=full`. null
+        // means the provider has no training-data mode (e.g. Perplexity).
+        const trainingModel = deriveTrainingModel(r.name, modelId);
+        activeProviders.push({
+          name: r.name,
+          model: modelId,
+          trainingModel,
+          classifyModel: r.cfg.classifyModel || MODEL_FALLBACK[r.name]?.classify,
+          mainOptions: MAIN_OPTIONS_BY_PROVIDER[r.name] || {},
+          colLabel: _modelColLabel(r.name, modelId),
+          apiKey: r.apiKey,
+          ...PROVIDERS[r.name],
+        });
+      }
     }
   }
 
@@ -1916,17 +1969,9 @@ async function cmdRun(options = {}) {
     console.log(`${c.dim}  ${skipKeys.size} check${skipKeys.size !== 1 ? 's' : ''} already succeeded today — retrying only errors${c.reset}\n`);
   }
 
-  // Replay mode (see replay-mode block at top of file)
-  let replaySrcDate = null;
-  if (options.replay) {
-    replaySrcDate = await _resolveReplaySource(options.replayFrom);
-    if (!replaySrcDate) {
-      console.error(`${c.red}--replay: no prior aeo-responses/YYYY-MM-DD folder found${c.reset}`);
-      process.exit(1);
-    }
-    console.log(`${c.yellow}  [replay] serving cached responses from aeo-responses/${replaySrcDate}/${c.reset}\n`);
-  }
-  // End replay
+  // Replay mode: replaySrcDate was resolved earlier (before model discovery)
+  // so the replay branch could skip the live `/v1/models` HTTP. See the block
+  // ~1720 for the resolution + provider-build logic.
 
   // Run all checks via the adaptive scheduler. Tasks are collected with their
   // (provider, model) ledger key — `planSchedule` packs each (provider, model)

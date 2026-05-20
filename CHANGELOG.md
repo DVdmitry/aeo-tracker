@@ -2,6 +2,27 @@
 
 All notable changes to `aeo-platform` (formerly `@webappski/aeo-tracker`).
 
+## [1.1.0] — 2026-05-20
+
+**Replay mode is now fully offline.** Prior to 1.1.0, `aeo-platform run --replay` still hit `/v1/models` discovery before falling into the replay seam — which meant fake / missing API keys produced `authError=true` → all providers skipped → exit 1 before any cached response could be read. Users running `--replay` for offline analysis, CI environments without secrets, or air-gapped machines were blocked. Fixed structurally by wrapping the discovery block in `if (!replaySrcDate)`: when `--replay [--replay-from=DATE]` is active, the CLI skips live model discovery entirely and uses `cfg.model` from `.aeo-tracker.json` directly — `_tryReplay` reads cached responses keyed by that model name.
+
+### Added
+
+- **Replay mode requires zero API keys.** `OPENAI_API_KEY` / `GEMINI_API_KEY` / etc. no longer needed when `--replay` is set. CI pipelines can replay cached snapshots without secret management.
+- `test/replay-skips-discovery.test.js` — pins the new behavior: replay run with fake keys must NOT call /v1/models, must NOT print «No API keys found», must exit successfully when replay data is valid.
+
+### Fixed
+
+- **`bin/aeo-tracker.js` `cmdRun` restructure (~46 LOC).** `replaySrcDate` resolution moved before the discovery block. When replay is active, builds `activeProviders` directly from `providerConfig` (no auth check, no HTTP). Live mode (no `--replay`) path unchanged. Eliminates the «discovery 401 → skip provider → exit 1» dead-end that made replay unusable with anything but real keys.
+
+### Notes
+
+- **Lingering caveat (not blocker, not fixed in this release):** the per-cell run loop still invokes `extractWithTwoModels` and `classifySentimentWithTwoModels` against live OpenAI + Gemini classify endpoints — replay does NOT yet skip extraction/sentiment LLM calls. Replay with fake keys reaches the replay seam (cache reads succeed) but then errors per-cell during extraction → exit 3, not exit 0. Real keys still required for full clean exit-0 replay. Tracked in `webappski-ops/resources/aeo-platform/PITFALLS.md`.
+
+### Internal
+
+- Phase 0 manual P0-9 verification (test-design-audit methodology) caught the pre-1.1.0 «exit 1 in replay» dead-end before any test code was written. Both v1 audit and v2 re-audit had signed off without verifying the prerequisite — the manual pre-write gate was the catch.
+
 ## [1.0.8] — 2026-05-18
 
 **Validator honesty part 2.** 1.0.7 dogfood revealed three connected contradictions in a single recovery-panel render: header claimed «5 of 5 commercial candidates passed», yet recovery fired anyway with blocked queries labelled «non-commercial (search_behavior: retrieval-triggered)» — a contradiction in one line, because retrieval-triggered IS commercial. Real reason was a confidence-threshold gate that rejected `valid:true` queries with confidence < 0.7. This is the same class of bug we fought in 1.0.4 → 1.0.5 → 1.0.6 → 1.0.7: substitution block and main validation using different rules. Closed structurally.
