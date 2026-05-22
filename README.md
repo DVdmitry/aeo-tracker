@@ -254,7 +254,7 @@ Sub-components with insufficient data (e.g. zero rank positions in a first run) 
 | `aeo-platform init` | Set up `.aeo-tracker.json` — auto-discovers category, generates 3 commercial queries, validates them |
 | `aeo-platform init --queries-only` | Re-suggest queries without touching brand / domain / providers |
 | `aeo-platform run` | Query each AI engine with each query. Save raw responses to `aeo-responses/YYYY-MM-DD/` |
-| `aeo-platform run --replay [--replay-from=YYYY-MM-DD]` | Rebuild today's summary from cached responses (zero API cost, fully offline — no API keys required) |
+| `aeo-platform run --replay [--replay-from=YYYY-MM-DD]` | Rebuild today's summary from cached responses (zero API cost, fully offline — no extractor/sentiment LLM calls either; no API keys required) |
 | `aeo-platform run-manual <engine> --from-dir ./folder` | Import pasted UI answers for engines without an accessible API |
 | `aeo-platform report` | Generate `report.md` + `report.html`. HTML auto-opens in your browser |
 | `aeo-platform diff` | Compare last two runs — what changed, what's new, what regressed |
@@ -280,7 +280,7 @@ Every flag `aeo-platform` accepts, grouped by which command consumes it.
 | `--json` | `run` | Structured JSON to stdout, ANSI suppressed (CI-friendly) |
 | `--geo=us,uk,de,...` | `run` | Run queries under multiple regional contexts. 12 codes: `us, uk, de, fr, es, it, ca, au, in, br, jp, nl`. Multiplies cost by region count |
 | `--depth=<web\|full\|auto>` | `run` | `web` (default) — single web pass. `full` — adds training-data pass (~2× cost). `auto` — prompts if last training baseline > 14 days |
-| `--replay` | `run` | Rebuild summary from cached raw responses (zero API cost, fully offline — skips live model discovery; no API keys required) |
+| `--replay` | `run` | Rebuild summary from cached raw responses (zero API cost, fully offline — skips live model discovery AND extractor/sentiment LLM calls; no API keys required) |
 | `--replay-from=YYYY-MM-DD` | `run` | Replay a specific date instead of the most recent capture |
 | `--from-dir <path>` | `run-manual` | Directory containing `q1.txt`, `q2.txt`, `q3.txt` with pasted UI answers |
 | `--last <N>` / `--since <date>` | `diff` | Compare last N runs / compare a date to latest run |

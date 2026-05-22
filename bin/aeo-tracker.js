@@ -2092,22 +2092,46 @@ async function cmdRun(options = {}) {
               // ~$0.0008 per non-mention cell.
               //   extraction.verified  = both models agreed (strong signal)
               //   extraction.unverified = only one model agreed (weaker — dashed badge)
-              const sentimentTask = (mention === 'yes' || mention === 'src')
-                ? classifySentimentWithTwoModels({
+              //
+              // Replay mode (1.1.1): extractor + sentiment are LIVE classify-tier
+              // calls — they hit OpenAI + Gemini even when the main provider.call
+              // was served from cache. Under `--network none` (Docker, air-gapped
+              // CI) they retry DNS failures as transient and hang for the full
+              // retry budget. Mirror the discovery-skip pattern from 1.1.0: when
+              // replay is active, short-circuit to empty shapes that the
+              // downstream code already handles (verified/unverified arrays both
+              // empty → `storeSources` is false → no source-list bloat;
+              // sentiment=null is already guarded everywhere it's read).
+              let extraction, sentiment;
+              if (replaySrcDate) {
+                extraction = {
+                  verified: [],
+                  unverified: [],
+                  sources: {
+                    primary:   { model: '', brands: [] },
+                    secondary: { model: '', brands: [] },
+                  },
+                  costInfo: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+                };
+                sentiment = null;
+              } else {
+                const sentimentTask = (mention === 'yes' || mention === 'src')
+                  ? classifySentimentWithTwoModels({
+                      text, brand, domain,
+                      primary: extractionProviders.primary,
+                      secondary: extractionProviders.secondary,
+                    })
+                  : Promise.resolve(null);
+                [extraction, sentiment] = await Promise.all([
+                  extractWithTwoModels({
                     text, brand, domain,
+                    category: config.category || '',
                     primary: extractionProviders.primary,
                     secondary: extractionProviders.secondary,
-                  })
-                : Promise.resolve(null);
-              const [extraction, sentiment] = await Promise.all([
-                extractWithTwoModels({
-                  text, brand, domain,
-                  category: config.category || '',
-                  primary: extractionProviders.primary,
-                  secondary: extractionProviders.secondary,
-                }),
-                sentimentTask,
-              ]);
+                  }),
+                  sentimentTask,
+                ]);
+              }
               const competitors = extraction.verified;
               const competitorsUnverified = extraction.unverified;
               const canonicalCitations = [...new Set(citations)];

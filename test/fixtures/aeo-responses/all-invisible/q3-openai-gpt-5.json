@@ -1,0 +1,13 @@
+{
+  "id": "chatcmpl-fixture-invisible-q3-openai",
+  "model": "gpt-5-search-api",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "Comparisons in this category typically pit CompetitorA against CompetitorB. Smaller players exist but rarely surface.",
+        "annotations": []
+      }
+    }
+  ]
+}

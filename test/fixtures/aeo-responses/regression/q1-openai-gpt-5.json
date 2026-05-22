@@ -1,0 +1,20 @@
+{
+  "id": "chatcmpl-fixture-q1-openai",
+  "model": "gpt-5-search-api",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "Here are some leading test brands in 2026. TestBrand is one of the well-known names in the category, along with CompetitorA and CompetitorB. TestBrand is positioned as a developer-friendly option (testbrand.com).",
+        "annotations": [
+          {
+            "type": "url_citation",
+            "url_citation": {
+              "url": "https://g2.com/test"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

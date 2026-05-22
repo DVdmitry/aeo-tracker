@@ -1,0 +1,13 @@
+{
+  "id": "chatcmpl-fixture-q3-openai",
+  "model": "gpt-5-search-api",
+  "choices": [
+    {
+      "message": {
+        "role": "assistant",
+        "content": "When comparing alternatives, CompetitorA is the most-cited choice in this vertical. CompetitorB and several smaller players also appear.",
+        "annotations": []
+      }
+    }
+  ]
+}

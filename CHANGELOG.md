@@ -2,6 +2,23 @@
 
 All notable changes to `aeo-platform` (formerly `@webappski/aeo-tracker`).
 
+## [1.1.1] — 2026-05-20
+
+**Replay mode now skips extractor + sentiment LLM calls too.** 1.1.0 made `--replay` skip live `/v1/models` discovery and the main `provider.call`, but `extractWithTwoModels` + `classifySentimentWithTwoModels` still fired against live OpenAI + Gemini classify endpoints inside the per-cell loop. Under `--network none` (Docker, air-gapped CI) those calls retried DNS errors as transient and hung for the full 30-retry budget. Closes the «lingering caveat» documented in 1.1.0 Notes.
+
+### Fixed
+
+- **`bin/aeo-tracker.js` per-cell loop (~lines 2089–2135, ~26 LOC).** Wrapped `extractWithTwoModels` + `classifySentimentWithTwoModels` Promise.all in `if (!replaySrcDate)`. Under `--replay`, `extraction` resolves to empty shapes (`verified: []`, `unverified: []`, `sources.{primary,secondary}.{model:'', brands:[]}`, zero costInfo) and `sentiment` to `null`. Downstream code at lines 2111–2173 already handles these shapes — `storeSources` evaluates false on empty unverified + no errors, sentiment is already null-guarded.
+
+### Verified
+
+- macOS `npm test` — 21 pass / 1 skip / 0 fail × 3 consecutive runs (regression-clean).
+- Docker `node:22-alpine --network none` — 19 pass / 1 skip / 2 fail (was 11 pass / 10 fail before 1.1.1). Remaining 2 failures (P0-13 `run-manual perplexity`, P0-9 `malformed-fixtures exit 3`) share a **different root cause** — the retry classifier in `provider.call` / `extractWithTwoModels` (run-manual path, line 3313) treats DNS-unreachable as transient. Out of scope for 1.1.1; tracked for follow-up.
+
+### Notes
+
+- The second extractor call site at `bin/aeo-tracker.js:3313` (`run-manual` subcommand) is **deliberately not wrapped.** run-manual's whole product purpose is extracting competitors from pasted text — replay-skip semantics don't apply there.
+
 ## [1.1.0] — 2026-05-20
 
 **Replay mode is now fully offline.** Prior to 1.1.0, `aeo-platform run --replay` still hit `/v1/models` discovery before falling into the replay seam — which meant fake / missing API keys produced `authError=true` → all providers skipped → exit 1 before any cached response could be read. Users running `--replay` for offline analysis, CI environments without secrets, or air-gapped machines were blocked. Fixed structurally by wrapping the discovery block in `if (!replaySrcDate)`: when `--replay [--replay-from=DATE]` is active, the CLI skips live model discovery entirely and uses `cfg.model` from `.aeo-tracker.json` directly — `_tryReplay` reads cached responses keyed by that model name.

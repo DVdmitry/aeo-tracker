@@ -9,13 +9,27 @@ This directory holds two kinds of fixtures:
 
 | Path | Purpose |
 |---|---|
-| `aeo-responses/stable/` | Healthy replay snapshot — 9 raw provider responses (3 queries × 3 providers) + `_summary.json`. `TestBrand` is mentioned in some cells, not in others — produces a non-trivial score. |
-| `aeo-responses/regression/` | Same raw files as `stable/`, but `_summary.json.score` bumped to 80 to simulate a baseline that a fresh run (producing 50) regresses against. |
-| `aeo-responses/all-invisible/` | 9 raw responses with the brand name scrubbed — competitors only. Drives the "score 0, all-no" path. |
-| `aeo-responses/all-errored/` | 9 raw files containing malformed JSON to drive the exit-code-3 "all providers failed" path. Validates `_tryReplay` hardening (try/catch around `JSON.parse`) and the upstream `mention='error'` cascade. |
+| `aeo-responses/stable/` | Healthy replay snapshot — 9 raw provider responses (3 queries × 3 providers) + `_summary.json`. `TestBrand` is mentioned in some cells, not in others — produces a non-trivial score. Ships BOTH `q{N}-openai-gpt-5-search-api.json` (historical provenance) AND `q{N}-openai-gpt-5.json` (byte-identical copy — see "OpenAI model-name duplicates" below). |
+| `aeo-responses/regression/` | Same raw files as `stable/`, but `_summary.json.score` bumped to 80 to simulate a baseline that a fresh run (producing 50) regresses against. Same gpt-5 duplicate convention. |
+| `aeo-responses/all-invisible/` | 9 raw responses with the brand name scrubbed — competitors only. Drives the "score 0, all-no" path (exit 2). Same gpt-5 duplicate convention. |
+| `aeo-responses/all-errored/` | Historical variant from Phase 1. **DEPRECATED** for the exit-3 contract — see `malformed/` below. Retained for reference; new tests should not depend on it. |
+| `aeo-responses/malformed/` | 3 files containing literally invalid JSON (`not-json-at-all`). Drives the canonical exit-code-3 path: `_tryReplay` (`bin/aeo-tracker.js:295-310`) swallows the SyntaxError, returns null, caller falls through to live `provider.call(...)`, fake `OPENAI_API_KEY` returns 401 (or `--network none` returns DNS error — either way the per-cell catch fires), `mention='error'` for every cell, `errors === results.length` → exit 3. Trace verified in Phase 0 manual gate 2026-05-20. |
 | `manual-paste/` | `q1.txt` / `q2.txt` / `q3.txt` — plausible AI-engine outputs in the format a user would paste from a browser-only engine (Perplexity Pro, Claude.ai, etc). |
 | `diff-pair/` | `yesterday-summary.json` / `today-summary.json` — minimal `_summary` pair (score 40 → 50) for the `diff` command. |
 | `access-logs/sample.log` | ≥50 lines of Combined Log Format mixing AI bot UAs (GPTBot, ClaudeBot, PerplexityBot, Google-Extended, Bytespider, Applebot) with human UAs (Mozilla / Safari / Chrome / Firefox / mobile). Drives `lib/report/log-parser.js`. |
+
+## OpenAI model-name duplicates (gpt-5-search-api vs gpt-5)
+
+Each healthy variant (`stable/`, `regression/`, `all-invisible/`) ships TWO byte-identical copies of every OpenAI fixture file:
+
+- `q{N}-openai-gpt-5-search-api.json` — historical filename, matches founder's production model selection.
+- `q{N}-openai-gpt-5.json` — byte-identical duplicate, lets the E2E suite configure `providers.openai.model = "gpt-5"` without triggering the scheduler's 60 s/test pacing stall.
+
+**Why both:** `lib/util/scheduler.js::planSchedule` paces any model with TPM ≤ 6000 across 60 s windows. `gpt-5-search-api` is 6 k TPM (`lib/providers/rate-limits.js:18`); `gpt-5` is 90 k TPM (line 21). Phase 2 first attempt configured `gpt-5-search-api` in tests → every 3-query test stalled 60 s under the scheduler even in replay mode (PITFALLS 2026-05-19 entry 5). The byte-identical duplicate lets tests configure `gpt-5` while keeping the original-name fixture available for any future smoke pass that wants to recreate production conditions.
+
+**Why byte-identical and not a separate response shape:** `_extractFromRaw` (`bin/aeo-tracker.js:257-293`) reads only `choices[0].message.content` and `annotations[].url_citation.url` — it ignores the `model` field inside the JSON body. So the same bytes work under either filename.
+
+When you need to regenerate either name, regen both with `cp`. Keep them in lockstep.
 
 ## Provenance
 
